@@ -66,7 +66,7 @@ with b_rf, st.container(key="sl_card_rf", border=True):
     st.html('<div class="sl-sec"><span class="n">2</span>Tickets by RF Analysis</div>'
             + (S.by_rf(SHOWN) or '<div class="sl-note">No RF Analysis named.</div>'))
 with b_user, st.container(key="sl_card_user", border=True):
-    st.html('<div class="sl-sec"><span class="n">3</span>Tickets by User <small>top 5'
+    st.html('<div class="sl-sec"><span class="n">3</span>Tickets by User <small>top 8'
             "</small></div>"
             + (S.by_user(SHOWN) or '<div class="sl-note">No user named.</div>'))
 
@@ -153,7 +153,9 @@ with st.container(key="sl_card_detail", border=True):
             else:
                 st.html('<div class="sl-note">No hourly data for this serving sector in the '
                         "loaded export.</div>")
-    with p4:
+    if st.session_state.get("sl_fs"):
+        st.html(S.FS_CSS)
+    with p4, st.container(key="sl_mapbox"):
         m_t, m_b = st.columns([1, 1], gap="small", vertical_alignment="center")
         with m_t:
             st.html('<div class="sl-sec"><span class="n">4</span>Map &amp; User Location'

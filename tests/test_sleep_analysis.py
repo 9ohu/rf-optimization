@@ -226,12 +226,11 @@ def test_a_sector_still_over_the_line_is_not_solved_and_the_comment_says_by_how_
     ev = _evidence()[("BAS0001", 2.0)]
     verdict, text = A.judge("utilization", "BAS0001-2", ev, None, metres=312.0)
     assert verdict == A.NOT_SOLVE
-    # the comment reads as an engineer would write it: the sector, how far the
-    # subscriber is from it, and what the KPI actually did
-    assert text.startswith("The serving sector is BAS0001-2 and the distance to the serving "
-                           "site is 312 m.")
-    assert "still suffering from a high PRB utilization issue" in text
-    assert "95%" in text and "6 hours of the 6 measured" in text
+    # the description is the R5 team's fixed format, with only the values filled in
+    assert text == ("The serving sector is BAS0001-2, with a distance of 312 m from the user "
+                    "location. The sector is still experiencing high PRB utilization, with a "
+                    f"maximum value of 95.0% and an average value of {ev.prb_avg:.1f}%. "
+                    "The RSRP measurement is N/A.")
     for word in ("AI", "artificial intelligence", "the system detected"):
         assert word.lower() not in text.lower()
 
@@ -239,13 +238,13 @@ def test_a_sector_still_over_the_line_is_not_solved_and_the_comment_says_by_how_
 def test_a_sector_that_has_come_down_is_solved_on_the_same_numbers():
     ev = _evidence()[("BAS0001", 1.0)]
     verdict, text = A.judge("utilization", "BAS0001-1", ev, None)
-    assert verdict == A.SOLVE and "40%" in text and "85%" in text
+    assert verdict == A.SOLVE and "maximum value of 40.0%" in text
 
 
 def test_interference_is_judged_on_the_operators_own_line():
     ev = _evidence()
     bad, text = A.judge("interference", "BAS0001-2", ev[("BAS0001", 2.0)], None)
-    assert bad == A.NOT_SOLVE and "-100.0 dBm" in text and "-105 dBm" in text
+    assert bad == A.NOT_SOLVE and "maximum RTWP value of -100.0 dBm" in text
     ok, _ = A.judge("interference", "BAS0001-3", ev[("BAS0001", 3.0)], None)
     assert ok == A.SOLVE
 
@@ -254,7 +253,9 @@ def test_coverage_is_judged_where_the_subscriber_was():
     weak = A.Point(rsrp=-113.0, mr=120, metres=3.0)
     fine = A.Point(rsrp=-92.0, mr=400, metres=8.0)
     bad, text = A.judge("coverage", "BAS0001-1", None, weak)
-    assert bad == A.NOT_SOLVE and "-113.0 dBm" in text and "120 MRs" in text
+    assert bad == A.NOT_SOLVE and text == (
+        "The serving sector is BAS0001-1, with a distance of N/A from the user location. "
+        "The area is still experiencing weak coverage, with an RSRP measurement of -113.0 dBm.")
     good, _ = A.judge("coverage", "BAS0001-1", None, fine)
     assert good == A.SOLVE
 
@@ -262,16 +263,19 @@ def test_coverage_is_judged_where_the_subscriber_was():
 def test_a_planned_site_not_on_air_is_not_solved_whatever_the_kpi_says():
     verdict, text = A.judge("planned", "BAS0001-3", _evidence()[("BAS0001", 3.0)], None,
                             A.NOT_ON_AIR, "BAS9999")
-    assert verdict == A.NOT_SOLVE and "BAS9999" in text and "not on air" in text
+    assert verdict == A.NOT_SOLVE and text.startswith(
+        "The planned site BAS9999 is still not on air. The serving sector is BAS0001-3")
     # on air, the check carries on at the subscriber's point
     on, text = A.judge("planned", "BAS0001-3", None, A.Point(-92.0, 400, 8.0), A.ON_AIR,
                        "BAS9999")
-    assert on == A.SOLVE and "BAS9999 is on air" in text
+    assert on == A.SOLVE and "BAS9999 is now on air" in text
+    assert text.endswith("The current RSRP measurement is -92.0 dBm.")
 
 
 def test_flow_control_is_judged_on_the_counter_of_the_site():
-    bad, text = A.judge("flow_control", "BAS0001-1", None, None, flow=(30, 14499.0))
-    assert bad == A.NOT_SOLVE and "30 hour" in text and "14,499" in text
+    bad, text = A.judge("flow_control", "BAS0001-1", None, None, flow=(30, 14499.0, 812.25))
+    assert bad == A.NOT_SOLVE and ("Flow Control issues, with a maximum value of 14,499 and "
+                                   "an average value of 812.2") in text
     ok, _ = A.judge("flow_control", "BAS0001-1", None, None, flow=(0, 0.0))
     assert ok == A.SOLVE
     none, text = A.judge("flow_control", "BAS0001-1", None, None, flow=None)
@@ -281,7 +285,7 @@ def test_flow_control_is_judged_on_the_counter_of_the_site():
 def test_nothing_to_read_is_not_checked_rather_than_solved():
     for check in ("utilization", "interference"):
         verdict, text = A.judge(check, "BAS0001-9", None, None)
-        assert verdict == A.NOT_CHECKED and "not checked" in text.lower()
+        assert verdict == A.NOT_CHECKED and "N/A" in text
     assert A.judge("coverage", "BAS0001-1", None, None)[0] == A.NOT_CHECKED
     assert A.judge("utilization", "", None, None)[0] == A.NOT_CHECKED     # no sector on it
 
