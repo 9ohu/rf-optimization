@@ -606,11 +606,22 @@ DELAYED, ON_TIME = "Delayed", "On time"
 DELAY_RULE = "SLA Status is sla_violation"
 
 
+def _area_value(area, key: str):
+    """One field of a site-area RSRP record, or None when it is missing or
+    empty — a record may carry the median alone (a point's RSRP)."""
+    v = area.get(key) if isinstance(area, dict) else None
+    try:
+        return None if v is None or pd.isna(v) else v
+    except (TypeError, ValueError):
+        return v
+
+
 def rsrp_band(area, bands):
-    if not area or not bands:
+    median = _area_value(area, "median")
+    if median is None or not bands:
         return None
     from rfopt.geo.coverage import band_index
-    return bands[int(band_index(np.array([area["median"]]), bands)[0])]
+    return bands[int(band_index(np.array([median]), bands)[0])]
 
 
 def type_order(label: str) -> tuple:
@@ -1139,7 +1150,7 @@ def rsrp_row(area, bands, cov_loaded: bool) -> tuple[str, str, str]:
              '<div><div class="ca-evk-t">RSRP</div><div class="ca-evk-a">Site area RSRP<br>'
              "Customer location<br>Sector / distance</div></div></div>")
     lo, hi = -120.0, -70.0
-    value = area["median"] if area else None
+    value = _area_value(area, "median")
     if value is not None:
         lo, hi = min(lo, value - 5), max(hi, value + 5)
 
@@ -1159,13 +1170,21 @@ def rsrp_row(area, bands, cov_loaded: bool) -> tuple[str, str, str]:
              f'<div class="ca-rsc-ax"><span>{lo:g} dBm<br>(Worst)</span>'
              f'<span>{hi:g} dBm<br>(Best)</span></div></div>')
     band = rsrp_band(area, bands)
-    if area and band is not None:
+    if value is not None and band is not None:
         colour = band.colour
+        radius = _area_value(area, "radius_m")
+        weak_pct, weak_dbm = _area_value(area, "weak_pct"), _area_value(area, "weak_dbm")
+        grids = _area_value(area, "grids")
+        where = (f"site area ≤{radius:.0f} m · MR-weighted median" if radius is not None
+                 else "MR-weighted median")
+        detail = " · ".join(x for x in (
+            f"{weak_pct:.1f}% of MRs below {weak_dbm:g} dBm"
+            if weak_pct is not None and weak_dbm is not None else "",
+            f"{grids:,} grids" if grids is not None else "") if x)
         body = (f'<div class="ca-evs-h">{_esc(band.label)}</div>'
-                f'<div class="ca-evs-v">{area["median"]:.1f} dBm</div>'
-                f'<div class="ca-evs-p">site area ≤{area["radius_m"]:.0f} m · MR-weighted median</div>'
-                f'<div class="ca-evs-n">{area["weak_pct"]:.1f}% of MRs below {area["weak_dbm"]:g} dBm'
-                f' · {area["grids"]:,} grids</div>')
+                f'<div class="ca-evs-v">{value:.1f} dBm</div>'
+                f'<div class="ca-evs-p">{_esc(where)}</div>'
+                + (f'<div class="ca-evs-n">{_esc(detail)}</div>' if detail else ""))
     else:
         colour = PALETTE["nodata"]
         body = ('<div class="ca-evs-h">— No data</div><div class="ca-evs-p">'

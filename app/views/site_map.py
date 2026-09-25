@@ -696,8 +696,11 @@ def _rsrp_panel() -> None:
         st.caption("Search a Ticket ID to see its RSRP.")
         return
     area = CTX.rsrp.get(TK["site"]) if TK["site"] else None
-    site_txt = (f"{area['median']:.1f} dBm (≤{area['radius_m']:.0f} m, MR-weighted median)"
-                if area else "Not available")
+    area_median = _C._area_value(area, "median")
+    area_radius = _C._area_value(area, "radius_m")
+    site_txt = ("Not available" if area_median is None else
+                f"{area_median:.1f} dBm (≤{area_radius:.0f} m, MR-weighted median)"
+                if area_radius is not None else f"{area_median:.1f} dBm (MR-weighted median)")
     if re_ is not None:
         cust_txt = (f"{re_.rsrp:.1f} dBm ({re_.rsrp_note})" if re_.rsrp is not None
                     else f"Not available — {re_.rsrp_note}")
@@ -707,7 +710,7 @@ def _rsrp_panel() -> None:
         cust_txt = "Not available — no approved user location"
         sec_txt = "Not available"
     value = re_.rsrp if re_ is not None and re_.rsrp is not None else (
-        area["median"] if area else None)
+        area_median)
     point = {"median": value} if value is not None else None
     _, scale, _ = _C.rsrp_row(point, CTX.bands, bool(CTX.cov_kept))
     band = _C.rsrp_band(point, CTX.bands)

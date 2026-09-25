@@ -207,3 +207,84 @@ def test_a_ticket_searched_on_the_map_and_re_analysed_at_the_user(tmp_path, monk
     assert "1 · General analysis" in " ".join(_html(at))
     ca.run()
     assert "<span>Serving sector</span>" not in " ".join(_html(ca))
+
+
+# --------------------------------------------------------------------------- #
+# the RSRP panel: whatever the coverage record carries, it renders
+# --------------------------------------------------------------------------- #
+FULL_AREA = {"median": -85.4, "weak_pct": 0.0, "grids": 366, "mrs": 1200.0,
+             "radius_m": 500.0, "weak_dbm": -110.0}
+
+
+def test_the_rsrp_row_reads_every_area_field_optionally():
+    import _complaints as C
+    from rfopt.geo.coverage import load_bands
+    bands = load_bands()[0]
+    # the full site-area record: as before
+    _, scale, status = C.rsrp_row(FULL_AREA, bands, True)
+    assert "-85 dBm" in scale and "-85.4 dBm" in status
+    assert "site area ≤500 m · MR-weighted median" in status
+    assert "0.0% of MRs below -110 dBm · 366 grids" in status
+    # no radius (or no MR detail): the value and its band, without the missing parts
+    for area in ({k: v for k, v in FULL_AREA.items() if k != "radius_m"},
+                 {**FULL_AREA, "radius_m": None}, {"median": -98.7}):
+        _, scale, status = C.rsrp_row(area, bands, True)
+        assert "dBm" in scale and "MR-weighted median" in status and "≤" not in status
+    # nothing to read: the existing No data state
+    for area in (None, {}, {"median": None}, {"median": float("nan")}):
+        assert C.rsrp_band(area, bands) is None
+        _, _, status = C.rsrp_row(area, bands, True)
+        assert "No data" in status
+
+
+@pytest.mark.parametrize("approved", [False, True], ids=["no-user-location", "approved"])
+@pytest.mark.parametrize("area", [None, FULL_AREA, {"median": -95.2, "grids": 12}],
+                         ids=["no-coverage", "with-radius", "without-radius"])
+def test_the_site_map_renders_the_rsrp_panel_in_every_case(tmp_path, monkeypatch,
+                                                            put_resource, area, approved):
+    monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
+    AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
+    import _complaints as C
+    import _relocate
+    from test_complaint_analysis import _target_bytes
+    from rfopt.complaints.target_store import save_target
+
+    save_target(_target_bytes(), "Target 13-Sep.xlsx")
+    put_resource("kpi", "R5 4G Monitoring Hourly KPI.csv", _kpi_csv().encode(), "4G KPI")
+    put_resource("kmz", "R5_Sites.kmz", _kmz(), "Site KMZ")
+    if approved:
+        _relocate.approve("CC-1", *_at(120, 300))
+
+    real = C.load_workspace
+
+    def with_coverage(*a, **k):
+        # the site-area record as the coverage grid would give it, and the RSRP
+        # measured at the approved point
+        ctx = real(*a, **k)
+        ctx.rsrp = {"BAS0001": dict(area)} if area is not None else {}
+        ctx.cov_kept = {"grid": object()} if area is not None else {}
+        for r in ctx.re.values():
+            r.rsrp = -98.7 if area is not None else None
+        return ctx
+
+    monkeypatch.setattr(C, "load_workspace", with_coverage)
+    at = AppTest.from_file(str(APP / "views/site_map.py"), default_timeout=300)
+    at.session_state["sm_tid"] = "CC-1"
+    at.run()
+    assert not at.exception, at.exception
+    rsrp = next(b for b in _html(at) if "<span>Site area RSRP</span>" in b)
+    for part in ("Site area RSRP", "Customer location", "Sector / distance", 'class="ca-rsc"',
+                 'class="ca-evs"'):
+        assert part in rsrp, part
+    if area is None:
+        assert "<span>Site area RSRP</span><b>Not available</b>" in rsrp and "No data" in rsrp
+    elif "radius_m" in area:
+        assert "-85.4 dBm (≤500 m, MR-weighted median)" in rsrp
+    else:
+        assert "-95.2 dBm (MR-weighted median)" in rsrp
+    if approved:
+        assert "<span>Sector / distance</span><b>BAS0001-S2 · 300 m</b>" in rsrp
+        if area is not None:
+            assert "-98.7 dBm" in rsrp and "user location" in rsrp
+    else:
+        assert "no approved user location" in rsrp
