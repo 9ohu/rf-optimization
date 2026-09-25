@@ -816,33 +816,6 @@ def load_workspace(win_label: str, window_h: float, q: str = ""):
         tt_options=TT_OPTIONS, tt_colours=TT_COLOURS, re=re_by_i)
 
 
-def worst_areas(T: pd.DataFrame, top: int = 5) -> pd.DataFrame:
-    """The Sup Districts with the most affected tickets: tickets with a
-    (possible) technical issue first, then all tickets, then delay tickets.
-    Main Issue: the problem most of the area's technical tickets share."""
-    cols = ["#", "Sup District", "Total Tickets", "Delay", "Technical Issues", "Main Issue"]
-    d = T[T["Sup District"] != NA]
-    if d.empty:
-        return pd.DataFrame(columns=cols)
-    d = d.assign(_tech=d["Network Analysis"].isin([TECHNICAL, POSSIBLE]),
-                 _delay=d["Delay"].eq(DELAYED))
-
-    def main_issue(part: pd.DataFrame) -> str:
-        p = part.loc[part["_tech"], "Problem"]
-        p = p[p.ne("–") & p.ne("")]
-        return str(p.value_counts().index[0]) if len(p) else "No network issue"
-
-    g = d.groupby("Sup District", sort=False)
-    out = pd.DataFrame({"Total Tickets": g.size(), "Delay": g["_delay"].sum().astype(int),
-                        "Technical Issues": g["_tech"].sum().astype(int),
-                        "Main Issue": [main_issue(p) for _, p in g]})
-    out = (out.sort_values(["Technical Issues", "Total Tickets", "Delay"], ascending=False,
-                           kind="stable")
-           .head(top).rename_axis("Sup District").reset_index())
-    out.insert(0, "#", range(1, len(out) + 1))
-    return out[cols]
-
-
 def general_sector(site: str, analysis) -> str:
     """The sector of the worst cell behind a general (site-level) analysis:
     the lead KPI's worst cell, named as the hourly loader names sectors."""

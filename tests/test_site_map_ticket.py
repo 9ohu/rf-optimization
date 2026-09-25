@@ -110,24 +110,6 @@ def test_a_kpi_the_export_only_has_per_site_falls_back_to_the_site():
     assert got and all(set(t.by_site) == {"BAS0001-S2"} for t in got)
 
 
-def test_worst_areas_rank_sup_districts_by_their_technical_tickets():
-    import _complaints as C
-    T = pd.DataFrame({
-        "Sup District": ["Basra Center", "Basra Center", "Al Zubair", "Al Zubair", "Al Zubair",
-                         C.NA],
-        "Network Analysis": [TECHNICAL, TECHNICAL, TECHNICAL, NO_ISSUE, NO_ISSUE, TECHNICAL],
-        "Problem": ["Congestion", "Interference", "Congestion", "–", "–", "Outage"],
-        "Delay": [C.DELAYED, C.ON_TIME, C.DELAYED, C.DELAYED, C.ON_TIME, C.DELAYED]})
-    out = C.worst_areas(T)
-    assert list(out.columns) == ["#", "Sup District", "Total Tickets", "Delay",
-                                 "Technical Issues", "Main Issue"]
-    assert out["Sup District"].tolist() == ["Basra Center", "Al Zubair"]   # 2 technical first
-    assert out["Total Tickets"].tolist() == [2, 3] and out["Delay"].tolist() == [1, 2]
-    assert out["Main Issue"].tolist()[1] == "Congestion"
-    assert out["#"].tolist() == [1, 2]
-    assert C.worst_areas(T[T["Sup District"] == C.NA]).empty
-
-
 # --------------------------------------------------------------------------- #
 # the pages: Sites map search -> approve -> Delay Tickets Analysis agrees
 # --------------------------------------------------------------------------- #
@@ -174,14 +156,14 @@ def test_a_ticket_searched_on_the_map_and_re_analysed_at_the_user(tmp_path, monk
     at.run()
     assert not at.exception, at.exception
     text = " ".join(_html(at))
-    # the sidebar sections are gone; Worst Areas replaces Worst sectors
-    for gone in ("Map symbols", "Worst sectors", "LTE coverage", "Site status"):
+    # the sidebar sections are gone; four panels of one size under the map
+    for gone in ("Map symbols", "Worst sectors", "Worst Areas", "LTE coverage", "Site status"):
         assert gone not in text, gone
-    for part in ("Map layers &amp; Analysis", "Ticket ID", "User Location", "Worst Areas",
-                 "Ticket Information", "Main Issue KPI"):
+    for part in ("Map layers &amp; Analysis", "Ticket ID", "User Location", "RSRP",
+                 "Ticket Information", "Analysis Result", "Main Issue KPI"):
         assert part in text, part
-    # no EP here: the tickets have no Sup District to rank
-    assert any("placed in a Sup District" in c.value for c in at.caption)
+    src = (APP / "views" / "site_map.py").read_text(encoding="utf-8")
+    assert 'st.columns(4, gap="small")' in src and "height=_PANEL_H" in src
     assert not at.sidebar.get("expandable")               # nothing left in the sidebar
 
     # stage 1: the ticket, its general analysis, the map on its worst sector
@@ -205,6 +187,9 @@ def test_a_ticket_searched_on_the_map_and_re_analysed_at_the_user(tmp_path, monk
     assert "2 · User location" in text
     assert "<span>Serving sector</span><b>BAS0001-S2</b>" in text
     assert NO_ISSUE in text and at.session_state["sm_sel_sector"] == "BAS0001-S2"
+    # RSRP: no coverage grid here — the panel says so, the customer location is known
+    assert "<span>Sector / distance</span><b>BAS0001-S2 · 300 m</b>" in text
+    assert "No coverage grid in Coverage Data" in text
 
     # the same ticket on Delay Tickets Analysis: one result
     ca = AppTest.from_file(str(APP / "views/complaint_analysis.py"), default_timeout=300)

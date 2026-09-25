@@ -157,11 +157,15 @@ _MAP_CSS = """
 }
 .st-key-sm_kpi_list label p { font-size: 12.5px; }
 /* the ticket's analysis beside its information: each value under its label */
-.ca-kv.sm-an { grid-template-columns: minmax(0, 1fr); gap: 1px; }
-.ca-kv.sm-an span { font-size: 11px; margin-top: 5px; }
+.ca-kv.sm-an { grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+    gap: 4px 12px; font-size: 12px; }
 .ca-kv.sm-an b { text-align: left; min-width: 0; overflow-wrap: anywhere; }
 .ca-kv.sm-an .ca-badge { white-space: normal; }
 .sm-an-note { color: #64748B; font-size: 11px; margin-top: 8px; }
+/* the four panels under the map: one row, one size */
+.st-key-sm_bottom [data-testid="stColumn"] > div { height: 100%; }
+.sm-rs .ca-rsc { padding-top: 24px; }
+.sm-rs .ca-evs { margin-top: 10px; }
 .st-key-sm_drawer_payload { display: none !important; }
 
 /* KPI selection floating on the map (full screen only), beside the layers */
@@ -662,7 +666,7 @@ def _analysis_html(tk: dict) -> str:
     status = _C._badge(a.classification, _C.CLASS_COLOUR[a.classification])
     if a.resolution:
         status += f" <small>{_C._esc(a.resolution)}</small>"
-    pairs = [("Stage", _C._esc(stage)), ("Serving sector", _C._esc(sector)),
+    pairs = [("Serving sector", _C._esc(sector)),
              ("Distance", _C._esc(row["Distance"])),
              ("Azimuth difference", _C._esc(f"{re_.server.az_diff_deg:.0f}°"
                                             if re_ is not None and re_.server else _C.NA)),
@@ -670,24 +674,60 @@ def _analysis_html(tk: dict) -> str:
              ("Status", status), ("Description", _C._esc(row["Description"]))]
     return ('<div class="ca-kv sm-an">'
             + "".join(f"<span>{_C._esc(k)}</span><b>{v}</b>" for k, v in pairs)
-            + f'</div><div class="sm-an-note">Correlation window {_C._esc(WIN_LABEL)} — '
-              "as on Delay Tickets Analysis.</div>")
+            + f'</div><div class="sm-an-note">Stage {_C._esc(stage)} · correlation window '
+              f"{_C._esc(WIN_LABEL)} — as on Delay Tickets Analysis.</div>")
 
 
-def _worst_areas_panel() -> None:
-    st.html(_title_html("Worst Areas", "alert", subtitle="by Sup District"))
-    if CTX is None:
-        st.caption(ctx_error or "No Daily Target in Data Resources → Complaint Data.")
+def _stage_title(tk) -> str:
+    if tk is None:
+        return ""
+    return "Stage 2 · User location" if tk["re"] is not None else "Stage 1 · General"
+
+
+def _rsrp_panel() -> None:
+    """RSRP on its band scale: the site area's (the coverage grid around the
+    site, as Delay Tickets Analysis reads it) and, once a user location is
+    approved, the RSRP measured there."""
+    re_ = TK["re"] if TK is not None else None
+    st.html(_title_html("RSRP", "signal",
+                        subtitle="user location" if re_ is not None and re_.rsrp is not None
+                        else "site area"))
+    if TK is None:
+        st.caption("Search a Ticket ID to see its RSRP.")
         return
-    areas = _C.worst_areas(CTX.T)
-    if areas.empty:
-        st.caption("No ticket of the Daily Target is placed in a Sup District.")
-        return
-    st.dataframe(areas, hide_index=True, width="stretch",
-                 height=min(38 + 35 * len(areas), 260),
-                 column_config={"#": st.column_config.NumberColumn("#", width="small")})
-    st.caption(f"Daily Target tickets ranked by technical issues ({WIN_LABEL} window), "
-               "then by tickets.")
+    area = CTX.rsrp.get(TK["site"]) if TK["site"] else None
+    site_txt = (f"{area['median']:.1f} dBm (≤{area['radius_m']:.0f} m, MR-weighted median)"
+                if area else "Not available")
+    if re_ is not None:
+        cust_txt = (f"{re_.rsrp:.1f} dBm ({re_.rsrp_note})" if re_.rsrp is not None
+                    else f"Not available — {re_.rsrp_note}")
+        sec_txt = (f"{re_.sector_id} · {TK['row']['Distance']}" if re_.server
+                   else "Not available")
+    else:
+        cust_txt = "Not available — no approved user location"
+        sec_txt = "Not available"
+    value = re_.rsrp if re_ is not None and re_.rsrp is not None else (
+        area["median"] if area else None)
+    point = {"median": value} if value is not None else None
+    _, scale, _ = _C.rsrp_row(point, CTX.bands, bool(CTX.cov_kept))
+    band = _C.rsrp_band(point, CTX.bands)
+    if band is not None:
+        where = "user location" if re_ is not None and re_.rsrp is not None else "site area"
+        status = (f'<div class="ca-evs" style="--c:{band.colour}">'
+                  f'<div class="ca-evs-h">{_C._esc(band.label)}</div>'
+                  f'<div class="ca-evs-v">{value:.1f} dBm</div>'
+                  f'<div class="ca-evs-p">{_C._esc(where)}</div></div>')
+    else:
+        status = ('<div class="ca-evs" style="--c:#64748B"><div class="ca-evs-h">— No data</div>'
+                  '<div class="ca-evs-p">'
+                  + ("No coverage grid near the site" if CTX.cov_kept
+                     else "No coverage grid in Coverage Data (Data Resources)")
+                  + "</div></div>")
+    st.html('<div class="sm-rs"><div class="ca-kv sm-an">'
+            + "".join(f"<span>{_C._esc(k)}</span><b>{_C._esc(v)}</b>" for k, v in (
+                ("Site area RSRP", site_txt), ("Customer location", cust_txt),
+                ("Sector / distance", sec_txt)))
+            + f"</div>{scale}{status}</div>")
 
 
 def _ticket_info_panel() -> None:
@@ -695,9 +735,17 @@ def _ticket_info_panel() -> None:
     if TK is None:
         st.caption("Search a Ticket ID to see its information.")
         return
-    left, right = st.columns(2, gap="small")
-    left.html(_C._kv(_C.ticket_info_rows(CTX, TK["row"])))
-    right.html(_analysis_html(TK))
+    # the Ticket Details fields, in the panels' shared label / value layout
+    st.html(_C._kv(_C.ticket_info_rows(CTX, TK["row"])).replace(
+        'class="ca-kv"', 'class="ca-kv sm-an"', 1))
+
+
+def _analysis_panel() -> None:
+    st.html(_title_html("Analysis Result", "target", subtitle=_stage_title(TK)))
+    if TK is None:
+        st.caption("Search a Ticket ID to see its analysis.")
+        return
+    st.html(_analysis_html(TK))
 
 
 def _main_kpi_panel() -> None:
@@ -1705,14 +1753,17 @@ if legend_slot is not None:
                   note="The legend on the map counts the sectors at the time on "
                        "its time bar; click a sector for its details.")
 
-# 4 Worst Areas · 5 Ticket Information · 6 Main Issue KPI
-_p1, _p2, _p3 = st.columns([1.05, 1.15, 1.05], gap="small")
-with _p1, st.container(key="rf_card_sm_areas", border=True):
-    _worst_areas_panel()
-with _p2, st.container(key="rf_card_sm_tinfo", border=True):
-    _ticket_info_panel()
-with _p3, st.container(key="rf_card_sm_kpi", border=True):
-    _main_kpi_panel()
+# under the map, one row of four panels of one size: RSRP · Ticket Information
+# · Analysis Result · Main Issue KPI (a long panel scrolls inside its card)
+_PANEL_H = 440
+with st.container(key="sm_bottom"):
+    _p = st.columns(4, gap="small")
+    for _col, _key, _draw in ((_p[0], "rf_card_sm_rsrp", _rsrp_panel),
+                              (_p[1], "rf_card_sm_tinfo", _ticket_info_panel),
+                              (_p[2], "rf_card_sm_result", _analysis_panel),
+                              (_p[3], "rf_card_sm_kpi", _main_kpi_panel)):
+        with _col, st.container(key=_key, border=True, height=_PANEL_H):
+            _draw()
 # read-out for whatever is drawn
 if saved:
     lines = []
