@@ -1,0 +1,3 @@
+complaint_id,cell_id,site_id,complaint_lat,complaint_lon,indoor,measured_rsrp_dbm,measured_rsrq_db,measured_sinr_db,note
+CMP-1001,R5-001_L2100_S1,R5-001,24.737005,46.672232,0,-114,-16,-2,"Customer: no signal at home, ~1.8 km north of site"
+CMP-1002,R5-003_L1800_S2,R5-003,24.747913,46.665725,1,-118,-17,-4,"Poor indoor coverage, dropped calls"

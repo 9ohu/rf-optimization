@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rfopt"
+version = "0.1.0"
+description = "Intelligent RF Optimization Tool - KPI analysis, RF diagnosis and computed optimisation actions (Huawei / LTE)"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "openpyxl>=3.1",
+    "pyyaml>=6.0",
+    "streamlit>=1.36",
+    "plotly>=5.22",
+    "folium>=0.17",
+    "streamlit-folium>=0.20",
+    "scipy>=1.13",
+]
+
+[project.optional-dependencies]
+ai = ["anthropic>=0.40"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+rfopt = "rfopt.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rfopt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]

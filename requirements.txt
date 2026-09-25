@@ -1,0 +1,18 @@
+pandas>=2.2
+numpy>=1.26
+openpyxl>=3.1
+xlsxwriter>=3.2            # KPI report: ~5x faster on the big hourly sheets
+python-calamine>=0.2      # fast .xlsx reads (10-30x openpyxl)
+pyarrow>=15              # parquet cache for the big daily parses
+pyyaml>=6.0
+streamlit>=1.36
+plotly>=5.22                # dashboard charts
+folium>=0.17               # Site Map (Leaflet) + draw / measure tools
+streamlit-folium>=0.20
+python-pptx>=1.0         # KPI Report Export: editable .pptx with native charts
+kaleido>=1.0            # Bulk Draw report: the drawn charts as pictures
+                        # (without it the deck draws the same lines itself)
+scipy>=1.13
+pytest>=8.0
+# Optional - only needed if you enable the Claude AI narrative layer:
+# anthropic>=0.40

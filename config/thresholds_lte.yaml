@@ -1,0 +1,83 @@
+# LTE KPI thresholds. Edit freely - the UI can also override per session.
+#   up   KPI  -> value below `warning`/`critical` is bad
+#   down KPI  -> value above `warning`/`critical` is bad
+# `min_traffic_gb` / `min_samples` suppress alarms on idle cells.
+
+guards:
+  min_traffic_gb: 0.05      # ignore a cell/hour carrying < 50 MB
+  min_rows: 1
+
+kpis:
+  # ---- Accessibility ----
+  rrc_setup_sr:      {warning: 98.5, critical: 96.0, min_traffic_gb: 0.1}
+  erab_setup_sr:     {warning: 99.0, critical: 97.0, min_traffic_gb: 0.1}
+  call_setup_sr:     {warning: 98.0, critical: 95.0, min_traffic_gb: 0.1}
+  rach_setup_sr:     {warning: 95.0, critical: 90.0}
+  ue_rejected_rrc:   {warning: 20,   critical: 100, direction: down,
+                      note: "RRC rejects per hour - congestion signal"}
+
+  # ---- Retainability ----
+  erab_drop_rate:    {warning: 0.8,  critical: 2.0,  direction: down,
+                      min_traffic_gb: 0.1}
+  ctxt_drop_rate:    {warning: 1.0,  critical: 2.5,  direction: down}
+
+  # ---- Mobility ----
+  ho_sr:             {warning: 97.0, critical: 93.0}
+  intra_freq_ho_sr:  {warning: 97.0, critical: 93.0}
+  inter_freq_ho_sr:  {warning: 95.0, critical: 90.0}
+  x2_ho_sr:          {warning: 97.0, critical: 92.0}
+  s1_ho_sr:          {warning: 95.0, critical: 90.0}
+  ho_ping_pong_rate: {warning: 4.0,  critical: 8.0,  direction: down}
+
+  # ---- Integrity / throughput ----
+  dl_user_thr_mbps:  {warning: 8.0,  critical: 3.0,  min_traffic_gb: 0.2,
+                      note: "Tune to the operator's cell-edge target"}
+  ul_user_thr_mbps:  {warning: 1.5,  critical: 0.5,  min_traffic_gb: 0.1}
+  dl_latency_ms:     {warning: 30,   critical: 60,   direction: down}
+
+  # ---- Coverage / quality ----
+  avg_rsrp_dbm:      {warning: -105, critical: -112,
+                      note: "Serving-cell MR average"}
+  avg_rsrq_db:       {warning: -12,  critical: -15}
+  avg_sinr_db:       {warning: 3.0,  critical: 0.0}
+  avg_cqi:           {warning: 7.0,  critical: 5.0}
+  pct_cqi_ge10:      {warning: 55,   critical: 40}
+  dl_bler:           {warning: 10,   critical: 15,   direction: down}
+  ul_bler:           {warning: 10,   critical: 18,   direction: down}
+  pct_rsrp_poor:     {warning: 12,   critical: 25,   direction: down,
+                      note: "% MR samples RSRP < -110 dBm"}
+  pct_rsrq_poor:     {warning: 10,   critical: 20,   direction: down}
+  dl_qpsk_ratio:     {warning: 25,   critical: 40,   direction: down}
+
+  # ---- Timing advance / overshoot ----
+  ta_p95_m:          {warning: 3500, critical: 6000, direction: down,
+                      note: "P95 UE distance - compare with inter-site distance"}
+  pct_ta_gt_threshold: {warning: 8,  critical: 15,   direction: down}
+
+  # ---- Utilisation / capacity ----
+  dl_prb_util:       {warning: 70,   critical: 85,   direction: down}
+  ul_prb_util:       {warning: 60,   critical: 80,   direction: down}
+  pdcch_util:        {warning: 65,   critical: 80,   direction: down}
+  rrc_conn_users_avg: {warning: 300, critical: 400,  direction: down,
+                       note: "Scale to licensed connected-user capacity"}
+  active_users_dl_avg: {warning: 12, critical: 20,   direction: down}
+
+  # ---- Availability ----
+  cell_avail_pct:    {warning: 99.9, critical: 99.0}
+  cell_unavail_min:  {warning: 5,    critical: 30,   direction: down}
+
+  # ---- Interference ----
+  ul_rssi_dbm:       {warning: -110, critical: -105, direction: down,
+                      note: "PUSCH noise+interference per PRB; -105 dBm ~ +10 dB rise"}
+  ul_rssi_pucch_dbm: {warning: -110, critical: -105, direction: down}
+  pct_prb_high_intf: {warning: 15,   critical: 30,   direction: down}
+
+# ---- Coverage map (Sites -> Coverage view) ---------------------------------
+# RSRP classes for the DL Coverage Insight grid, lower bounds in dBm. Fair ends
+# and Poor begins at avg_rsrp_dbm's warning line, Very poor at its critical
+# line (above), so the map and the KPI engine judge RSRP alike; set `fair` /
+# `poor` here only to draw the map with different lines. `covered_dbm` is the
+# weak-coverage line of pct_rsrp_poor (% MRs with RSRP < -110 dBm).
+coverage:
+  rsrp_dbm: {excellent: -85, good: -95}
+  covered_dbm: -110

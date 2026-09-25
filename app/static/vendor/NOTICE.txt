@@ -1,0 +1,13 @@
+Map libraries served by the app itself (app/_map_assets.py), so the maps never
+wait on an outside CDN. The files are the exact releases the maps loaded from
+their CDNs before, unmodified.
+
+leaflet/            Leaflet 1.9.3
+                    https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/
+                    BSD 2-Clause License
+                    (c) 2010-2022 Vladimir Agafonkin, (c) 2010-2011 CloudMade
+
+leaflet.draw/       Leaflet.draw 1.0.2
+                    https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.2/
+                    MIT License
+                    (c) 2012-2017, Jacob Toye, Jon West, Smartrak, Leaflet

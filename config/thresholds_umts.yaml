@@ -1,0 +1,26 @@
+# UMTS / WCDMA KPI thresholds.
+guards:
+  min_traffic_gb: 0.02
+  min_rows: 1
+
+kpis:
+  rrc_setup_sr:     {warning: 98.0, critical: 95.0}
+  rab_setup_sr_cs:  {warning: 99.0, critical: 97.0}
+  rab_setup_sr_ps:  {warning: 98.0, critical: 95.0}
+  cs_drop_rate:     {warning: 0.7,  critical: 1.5, direction: down}
+  ps_drop_rate:     {warning: 1.5,  critical: 3.0, direction: down}
+  soft_ho_sr:       {warning: 98.0, critical: 95.0}
+  irat_ho_sr:       {warning: 95.0, critical: 90.0}
+  avg_rscp_dbm:     {warning: -95,  critical: -105}
+  avg_ecno_db:      {warning: -12,  critical: -15}
+  hsdpa_thr_mbps:   {warning: 2.0,  critical: 0.8, min_traffic_gb: 0.1}
+  dl_power_util:    {warning: 75,   critical: 90,  direction: down}
+  ul_rtwp_dbm:      {warning: -95,  critical: -90, direction: down,
+                     note: "Idle RTWP ~ -105 dBm; -95 dBm ~ +10 dB rise"}
+  cell_avail_pct:   {warning: 99.9, critical: 99.0}
+  ipmm_rtt_ms:      {warning: 10,   critical: 20,  direction: down,
+                     note: "Iub RTT, daily mean. A healthy R5 NodeB sits under
+                            1 ms; 10 ms already means a queueing backhaul"}
+  dl_flowctrl_drops: {warning: 50000, critical: 500000, direction: down,
+                      note: "Iub DL flow-control drops per NodeB per day.
+                             R5 median is ~50; six figures is a congested Iub"}

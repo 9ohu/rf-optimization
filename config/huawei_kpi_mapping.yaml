@@ -1,0 +1,408 @@
+# Huawei (U2020 / PRS / MBB) KPI + counter name -> canonical schema mapping.
+#
+# Keys are canonical names (see rfopt/ingest/schema.py). Values are alias lists.
+# Matching is case / unit / punctuation insensitive (see mapping.normalise_name),
+# so "E-RAB Setup Success Rate (%)", "E RAB SETUP SUCCESS RATE" and
+# "erab_setup_success_ratio" all resolve to the same alias.
+#
+# Add your operator's exact column headers here once and every future upload
+# maps automatically. Unmapped columns are still surfaced in the UI for manual
+# mapping.
+
+common:
+  datetime:
+    - "Time"
+    - "Date"
+    - "Start Time"
+    - "Period Start Time"
+    - "Begin Time"
+    - "Date Time"
+    - "Result Time"
+  region:
+    - "Region"
+    - "Cluster"
+    - "Area"
+    - "Zone"
+    - "Sub Area"
+    - "TAC Name"
+  site_id:
+    - "eNodeB Name"
+    - "eNodeB"
+    - "NodeB Name"
+    - "NodeB"
+    - "BTS Name"
+    - "Site"
+    - "Site Name"
+    - "gNodeB Name"
+    - "ENodeb Function Name"
+    - "NE Name"
+  cell_id:
+    - "Cell Name"
+    - "Cell"
+    - "Cellname"
+    - "EUtranCell FDD"
+    - "EUtranCellFDD"
+    - "Cell FDD"
+    - "UtranCell"
+    - "GsmCell"
+  cell_local_id:
+    - "Cell ID"
+    - "Local Cell ID"
+    - "LocalCell Id"
+    - "CI"
+    - "Cell Identity"
+    - "PSC"
+    - "PCI"
+  band:
+    - "Band"
+    - "Frequency Band"
+    - "Band Indicator"
+    - "Carrier"
+    - "Sector Carrier"
+  earfcn:
+    - "EARFCN"
+    - "DL EARFCN"
+    - "Downlink EARFCN"
+    - "UARFCN"
+    - "ARFCN"
+  cell_avail_pct:
+    - "Cell Availability"
+    - "Cell Availability Rate"
+    - "Radio Network Availability Rate"
+    - "Cell Avail"
+    - "L.Cell.Avail.Dur / Period"
+  cell_unavail_min:
+    - "Cell Unavailable Time"
+    - "Cell Downtime"
+    - "Cell Unavailability Duration"
+  total_traffic_gb:
+    - "Total Traffic Volume (GB)"
+    - "Total Data Volume"
+    - "Total Traffic"
+
+lte:
+  # ---- Accessibility -------------------------------------------------------
+  rrc_setup_sr:
+    - "RRC Setup Success Rate"
+    - "RRC Connection Setup Success Rate"
+    - "RRC Setup Success Rate (Service)"
+    - "L.RRC.ConnReq.Succ / L.RRC.ConnReq.Att"
+    - "RRC_SR"
+  rrc_setup_att:
+    - "RRC Setup Attempts"
+    - "RRC Connection Setup Attempts"
+    - "L.RRC.ConnReq.Att"
+    - "L.RRC.ConnReq.Att(Mo-Data+Mo-Signal)"
+  rrc_setup_succ:
+    - "RRC Setup Successes"
+    - "RRC Connection Setup Success"
+    - "L.RRC.ConnReq.Succ"
+  erab_setup_sr:
+    - "E-RAB Setup Success Rate"
+    - "ERAB Setup Success Rate"
+    - "E-RAB Establishment Success Rate"
+    - "Initial E-RAB Setup Success Rate"
+    - "L.E-RAB.SuccEst / L.E-RAB.AttEst"
+  erab_setup_att:
+    - "E-RAB Setup Attempts"
+    - "E-RAB Establishment Attempts"
+    - "L.E-RAB.AttEst"
+  erab_setup_succ:
+    - "E-RAB Setup Successes"
+    - "L.E-RAB.SuccEst"
+  call_setup_sr:
+    - "Call Setup Success Rate"
+    - "CSSR"
+    - "VoLTE Call Setup Success Rate"
+    - "E2E Accessibility"
+  rach_setup_sr:
+    - "RACH Setup Success Rate"
+    - "Random Access Success Rate"
+    - "Contention Based Random Access Success Rate"
+    - "L.RA.Dedicate.Succ Rate"
+  ue_rejected_rrc:
+    - "RRC Connection Reject"
+    - "RRC Setup Rejections"
+    - "L.RRC.ConnReq.Rej"
+    - "L.RRC.ConnReq.Rej.Cong"
+    - "RRC Rejections due to Congestion"
+
+  # ---- Retainability ------------------------------------------------------
+  erab_drop_rate:
+    - "E-RAB Drop Rate"
+    - "ERAB Drop Rate"
+    - "Service Drop Rate"
+    - "E-RAB Abnormal Release Rate"
+    - "Call Drop Rate"
+    - "L.E-RAB.AbnormRel / (L.E-RAB.AbnormRel + L.E-RAB.NormRel)"
+  erab_abnorm_rel:
+    - "E-RAB Abnormal Releases"
+    - "L.E-RAB.AbnormRel"
+    - "L.E-RAB.AbnormRel.MME"
+  erab_drop_denom:
+    - "E-RAB Releases Total"
+    - "E-RAB Release Denominator"
+  ctxt_drop_rate:
+    - "UE Context Drop Rate"
+    - "Context Abnormal Release Rate"
+    - "S1 UE Context Release Rate"
+
+  # ---- Mobility ---------------------------------------------------------
+  ho_sr:
+    - "Handover Success Rate"
+    - "HO Success Rate"
+    - "Total Handover Success Rate"
+    - "E-UTRAN Handover Success Rate"
+    - "L.HHO.ExecSuccOut / L.HHO.ExecAttOut"
+  ho_att:
+    - "Handover Attempts"
+    - "HO Execution Attempts"
+    - "L.HHO.ExecAttOut"
+  ho_succ:
+    - "Handover Successes"
+    - "L.HHO.ExecSuccOut"
+  intra_freq_ho_sr:
+    - "Intra-Frequency Handover Success Rate"
+    - "Intra Freq HO Success Rate"
+    - "L.HHO.IntraFreq.ExecSuccOut / L.HHO.IntraFreq.ExecAttOut"
+  inter_freq_ho_sr:
+    - "Inter-Frequency Handover Success Rate"
+    - "Inter Freq HO Success Rate"
+  x2_ho_sr:
+    - "X2 Handover Success Rate"
+    - "X2-based Handover Out Success Rate"
+  s1_ho_sr:
+    - "S1 Handover Success Rate"
+    - "S1-based Handover Out Success Rate"
+  ho_ping_pong_rate:
+    - "Handover Ping-Pong Rate"
+    - "Ping Pong Handover Ratio"
+  redirect_to_umts:
+    - "Redirection to UTRAN"
+    - "CSFB to WCDMA"
+    - "L.RRCRedirection.E2W"
+
+  # ---- Integrity / throughput ----------------------------------------
+  dl_user_thr_mbps:
+    - "DL User Throughput"
+    - "Downlink User Throughput"
+    - "Cell DL User Average Throughput"
+    - "User Downlink Average Throughput (Mbps)"
+    - "PDCP DL Throughput"
+    - "L.Thrp.bits.DL / L.Thrp.Time.DL.RmvLastTTI"
+    - "Average DL UE Throughput"
+  ul_user_thr_mbps:
+    - "UL User Throughput"
+    - "Uplink User Throughput"
+    - "Cell UL User Average Throughput"
+    - "User Uplink Average Throughput (Mbps)"
+    - "L.Thrp.bits.UL / L.Thrp.Time.UL"
+  dl_cell_thr_mbps:
+    - "DL Cell Throughput"
+    - "Cell Downlink Average Throughput"
+    - "Downlink Average Throughput"
+  ul_cell_thr_mbps:
+    - "UL Cell Throughput"
+    - "Cell Uplink Average Throughput"
+  dl_latency_ms:
+    - "DL Latency"
+    - "Air Interface Latency"
+    - "U-Plane Latency"
+    - "Downlink Packet Delay"
+  dl_spectral_eff:
+    - "DL Spectral Efficiency"
+    - "Downlink Spectrum Efficiency"
+
+  # ---- Coverage / quality ------------------------------------------
+  avg_rsrp_dbm:
+    - "Average RSRP"
+    - "Avg RSRP"
+    - "RSRP"
+    - "Cell Average RSRP"
+    - "MR RSRP Average"
+    - "Average UE RSRP"
+  avg_rsrq_db:
+    - "Average RSRQ"
+    - "Avg RSRQ"
+    - "RSRQ"
+    - "MR RSRQ Average"
+  avg_sinr_db:
+    - "Average SINR"
+    - "Avg SINR"
+    - "SINR"
+    - "DL SINR"
+    - "PUSCH SINR"
+    - "Average CQI SINR"
+  avg_cqi:
+    - "Average CQI"
+    - "Avg CQI"
+    - "CQI"
+    - "Wideband CQI"
+    - "DL CQI Average"
+  pct_cqi_ge10:
+    - "CQI >= 10 Ratio"
+    - "Ratio of CQI Greater Than or Equal to 10"
+    - "Good CQI Ratio"
+  dl_bler:
+    - "DL Residual BLER"
+    - "Downlink IBLER"
+    - "DL BLER"
+    - "Initial DL BLER"
+  ul_bler:
+    - "UL Residual BLER"
+    - "Uplink IBLER"
+    - "UL BLER"
+  pct_rsrp_poor:
+    - "RSRP < -110 Ratio"
+    - "Weak Coverage Ratio"
+    - "Poor RSRP Sample Ratio"
+    - "MR Coverage Rate (RSRP<-110)"
+  pct_rsrq_poor:
+    - "RSRQ < -15 Ratio"
+    - "Poor RSRQ Sample Ratio"
+  dl_256qam_ratio:
+    - "DL 256QAM Ratio"
+    - "Downlink 256QAM Usage Ratio"
+  dl_qpsk_ratio:
+    - "DL QPSK Ratio"
+    - "Downlink QPSK Usage Ratio"
+
+  # ---- Timing advance -------------------------------------------
+  ta_avg_m:
+    - "Average TA Distance"
+    - "Average Timing Advance"
+    - "Mean UE Distance"
+    - "TA Distance Average"
+  ta_p95_m:
+    - "P95 TA Distance"
+    - "95th Percentile TA Distance"
+    - "TA Distance P95"
+  pct_ta_gt_threshold:
+    - "Overshooting Sample Ratio"
+    - "Far UE Ratio"
+    - "TA Beyond Threshold Ratio"
+
+  # ---- Utilisation / capacity --------------------------------
+  dl_prb_util:
+    - "DL PRB Utilization Rate"
+    - "Downlink PRB Usage Rate"
+    - "Cell DL PRB Utilizing Rate"
+    - "PRB Utilization DL"
+    - "L.ChMeas.PRB.DL.Used.Avg / L.ChMeas.PRB.DL.Avail"
+  ul_prb_util:
+    - "UL PRB Utilization Rate"
+    - "Uplink PRB Usage Rate"
+    - "Cell UL PRB Utilizing Rate"
+  pdcch_util:
+    - "PDCCH CCE Utilization Rate"
+    - "PDCCH Usage Rate"
+    - "Control Channel CCE Utilization"
+  rrc_conn_users_avg:
+    - "Average RRC Connected Users"
+    - "Avg Number of RRC Connection User"
+    - "L.Traffic.User.Avg"
+    - "Average Number of Users in RRC Connected Mode"
+  rrc_conn_users_max:
+    - "Max RRC Connected Users"
+    - "Maximum Number of RRC Connection User"
+    - "L.Traffic.User.Max"
+  active_users_dl_avg:
+    - "Average Active DL Users"
+    - "Avg Number of Active User in DL Buffer"
+    - "L.Traffic.ActiveUser.DL.Avg"
+  dl_traffic_gb:
+    - "DL Data Volume (GB)"
+    - "Downlink Traffic Volume"
+    - "PDCP DL Data Volume"
+    - "L.Thrp.bits.DL / 8e9"
+  ul_traffic_gb:
+    - "UL Data Volume (GB)"
+    - "Uplink Traffic Volume"
+    - "PDCP UL Data Volume"
+
+  # ---- Interference -----------------------------------------
+  ul_rssi_dbm:
+    - "UL RSSI"
+    - "Average UL Interference"
+    - "PUSCH Interference"
+    - "Uplink Interference Noise"
+    - "L.UL.Interference.Avg"
+    - "Average Noise and Interference Power on PUSCH"
+  ul_rssi_pucch_dbm:
+    - "PUCCH Interference"
+    - "Average Noise and Interference Power on PUCCH"
+  pct_prb_high_intf:
+    - "High Interference PRB Ratio"
+    - "Ratio of PRBs with Interference Above Threshold"
+
+umts:
+  rrc_setup_sr:
+    - "RRC Setup Success Rate"
+    - "RRC Connection Success Rate (CS+PS)"
+  rab_setup_sr_cs:
+    - "RAB Setup Success Rate CS"
+    - "CS RAB Establishment Success Rate"
+  rab_setup_sr_ps:
+    - "RAB Setup Success Rate PS"
+    - "PS RAB Establishment Success Rate"
+  cs_drop_rate:
+    - "CS Call Drop Rate"
+    - "CS RAB Drop Rate"
+    - "AMR Drop Rate"
+  ps_drop_rate:
+    - "PS Call Drop Rate"
+    - "PS RAB Drop Rate"
+    - "HSDPA Drop Rate"
+  soft_ho_sr:
+    - "Soft Handover Success Rate"
+    - "SHO Success Rate"
+  irat_ho_sr:
+    - "IRAT Handover Success Rate"
+    - "Inter-RAT HO Success Rate (to GSM)"
+  avg_rscp_dbm:
+    - "Average RSCP"
+    - "CPICH RSCP"
+  avg_ecno_db:
+    - "Average EcNo"
+    - "CPICH Ec/No"
+  hsdpa_thr_mbps:
+    - "HSDPA Throughput"
+    - "Cell HSDPA Throughput"
+  dl_power_util:
+    - "DL Power Utilization"
+    - "Average Transmitted Carrier Power Ratio"
+    - "TCP"
+  ul_rtwp_dbm:
+    - "UL RTWP"
+    - "Average RTWP"
+    - "Received Total Wideband Power"
+
+gsm:
+  tch_assign_sr:
+    - "TCH Assignment Success Rate"
+    - "TCH Seizure Success Rate"
+  sdcch_block_rate:
+    - "SDCCH Blocking Rate"
+    - "SDCCH Congestion Rate"
+  tch_block_rate:
+    - "TCH Blocking Rate"
+    - "TCH Congestion Rate"
+  call_drop_rate:
+    - "Call Drop Rate"
+    - "TCH Drop Rate"
+  ho_sr:
+    - "Handover Success Rate"
+    - "Outgoing Handover Success Rate"
+  dl_quality_p_good:
+    - "Good DL Quality Ratio"
+    - "RxQual 0-2 Ratio DL"
+  avg_rxlev_dl_dbm:
+    - "Average DL RxLev"
+    - "Downlink RxLev"
+  ul_interference_band:
+    - "UL Interference Band"
+    - "Average Interference Band"
+  erlang:
+    - "Traffic Erlang"
+    - "TCH Traffic"
+    - "Carried Traffic"

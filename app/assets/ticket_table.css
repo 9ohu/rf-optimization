@@ -1,0 +1,128 @@
+/* Tickets Details: the ticket table (ticket_table.js), in the app's dark style. */
+.tg { font: 13px/1.4 'Segoe UI', system-ui, -apple-system, sans-serif; color: #E2E8F0; }
+.tg svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tg button { font-family: inherit; }
+
+/* the title bar: the title, Clear filters, Export to Excel */
+.tg-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin-bottom: 10px; flex-wrap: wrap; }
+.tg-title { font-size: 17px; font-weight: 700; color: #F1F5F9; }
+.tg-acts { display: flex; gap: 8px; }
+.tg-btn { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px;
+    border-radius: 8px; border: 1px solid #1E3A5F; background: #0B1F33; color: #E2E8F0;
+    font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.tg-btn:hover:not(:disabled) { border-color: #1597FF; color: #FFFFFF; }
+.tg-btn:disabled { opacity: .45; cursor: default; }
+.tg-btn.pri { background: #1597FF; border-color: #1597FF; color: #FFFFFF; }
+.tg-btn.pri:hover:not(:disabled) { background: #0F86E8; border-color: #0F86E8; }
+
+/* the table: its header stays on top, # and HPSM Incident ID on the left */
+.tg-wrap { overflow: auto; max-height: 640px; border: 1px solid #1E3A5F; border-radius: 10px;
+    background: #071525; }
+.tg-t { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+.tg-t th, .tg-t td { height: 36px; padding: 0 10px; box-sizing: border-box; text-align: left;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-bottom: 1px solid #16324F; border-right: 1px solid #10263F; }
+.tg-t thead th { position: sticky; top: 0; z-index: 2; height: 40px; background: #0D2945;
+    color: #CBD5E1; font-weight: 600; border-bottom: 1px solid #1E3A5F; cursor: pointer;
+    user-select: none; }
+.tg-t thead th:hover { background: #12365A; }
+.tg-h { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.tg-hl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tg-si { display: flex; color: #20BFFF; }
+.tg-si svg { width: 14px; height: 14px; }
+.tg-hb { flex: 0 0 22px; width: 22px; height: 22px; padding: 0; display: flex;
+    align-items: center; justify-content: center; border-radius: 5px;
+    border: 1px solid #2A4A6F; background: #0B1F33; color: #94A3B8; cursor: pointer; }
+.tg-hb svg { width: 14px; height: 14px; }
+.tg-t thead th:hover .tg-hb, .tg-hb.open { border-color: #1597FF; color: #F1F5F9; }
+.tg-hb.on { background: #1597FF; border-color: #1597FF; color: #FFFFFF; }
+.tg-t tbody td { background: #071525; }
+.tg-t tbody tr[data-r] { cursor: pointer; }
+.tg-t tbody tr[data-r]:hover td { background: #0F2A47; }
+.tg-t tbody tr.sel td { background: #123A5E; }
+.tg-t tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 #20BFFF; }
+.tg-t .tg-n { position: sticky; left: 0; z-index: 1; text-align: right; color: #64748B;
+    font-variant-numeric: tabular-nums; cursor: default; }
+.tg-t .tg-pin { position: sticky; left: 52px; z-index: 1; box-shadow: 1px 0 0 #1E3A5F; }
+.tg-t tbody .tg-pin { color: #20BFFF; font-weight: 600; }
+.tg-t thead .tg-n, .tg-t thead .tg-pin { z-index: 3; }
+.tg-nil { color: #64748B; }
+.tg-pill { display: inline-block; padding: 1px 10px; border-radius: 6px; font-size: 12px;
+    font-weight: 700; color: #FFFFFF; background: var(--p); }
+.tg-cm span { color: #CBD5E1; text-decoration: underline dotted #2A4A6F;
+    text-underline-offset: 3px; }
+.tg-cm:hover span { color: #20BFFF; text-decoration-color: #20BFFF; }
+.tg-empty td { height: 90px; text-align: center; color: #94A3B8; cursor: default; }
+
+/* under the table: how many, the pages, rows per page */
+.tg-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.tg-count { flex: 1 1 auto; color: #94A3B8; font-size: 12.5px; }
+.tg-pages { display: flex; align-items: center; gap: 6px; }
+.tg-pg { min-width: 32px; height: 30px; padding: 0 9px; display: inline-flex;
+    align-items: center; justify-content: center; border-radius: 8px;
+    border: 1px solid #1E3A5F; background: #0B1F33; color: #E2E8F0; font-size: 13px;
+    font-weight: 600; cursor: pointer; font-variant-numeric: tabular-nums; }
+.tg-pg:hover:not(:disabled) { border-color: #1597FF; }
+.tg-pg.on { background: #1597FF; border-color: #1597FF; color: #FFFFFF; }
+.tg-pg:disabled { opacity: .4; cursor: default; }
+.tg-gap { color: #94A3B8; }
+.tg-size { height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid #1E3A5F;
+    background: #0B1F33; color: #E2E8F0; font: 13px 'Segoe UI', system-ui, sans-serif;
+    cursor: pointer; }
+
+/* a column's filter, under its header */
+.tg-menu { position: fixed; z-index: 1000; width: 300px; max-height: calc(100vh - 16px);
+    box-sizing: border-box; display: flex; flex-direction: column; padding: 6px;
+    background: #0B1F33; border: 1px solid #2A4A6F; border-radius: 10px;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, .6), 0 0 0 1px rgba(21, 151, 255, .12); }
+.tg-menu[hidden], .tg-modal[hidden], .tg-copy[hidden] { display: none; }
+.tg-mi { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 32px;
+    padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #E2E8F0;
+    font-size: 13px; text-align: left; cursor: pointer; }
+.tg-mi span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+.tg-mi:hover:not(:disabled) { background: #15406B; }
+.tg-mi.on { color: #20BFFF; }
+.tg-mi:disabled { color: #64748B; cursor: default; }
+.tg-sep { height: 1px; margin: 5px 2px; background: #1E3A5F; }
+.tg-q { display: flex; align-items: center; gap: 7px; height: 32px; margin: 2px 0 6px;
+    padding: 0 9px; border: 1px solid #2A4A6F; border-radius: 7px; background: #071525;
+    color: #94A3B8; cursor: text; }
+.tg-q:focus-within { border-color: #1597FF; }
+.tg-q input { flex: 1 1 auto; min-width: 0; border: 0; outline: 0; background: transparent;
+    color: #E2E8F0; font: 13px 'Segoe UI', system-ui, sans-serif; }
+.tg-list { flex: 1 1 auto; min-height: 90px; max-height: 270px; overflow: auto; padding: 4px 0;
+    border: 1px solid #1E3A5F; border-radius: 7px; background: #071525; }
+.tg-it { display: flex; align-items: center; gap: 8px; padding: 3px 10px; cursor: pointer;
+    white-space: nowrap; }
+.tg-it:hover { background: #0F2A47; }
+.tg-it input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; accent-color: #1597FF;
+    cursor: pointer; }
+.tg-it span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tg-all span { font-weight: 600; }
+.tg-more, .tg-none { padding: 5px 4px 0; color: #94A3B8; font-size: 11.5px; }
+.tg-none { padding: 6px 10px; }
+.tg-more:empty { display: none; }
+.tg-mb { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.tg-mb .tg-btn { height: 30px; min-width: 78px; justify-content: center; }
+
+/* a Diagnostic Comment, whole */
+.tg-modal { position: fixed; top: 0; bottom: 0; left: 0; width: 100vw; z-index: 1001;
+    box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: rgba(2, 8, 16, .66); }
+.tg-dlg { width: min(780px, 100%); max-height: min(80vh, 720px); box-sizing: border-box;
+    display: flex; flex-direction: column; padding: 16px 18px; background: #0B1F33;
+    border: 1px solid #2A4A6F; border-radius: 12px; box-shadow: 0 18px 40px rgba(0, 0, 0, .6); }
+.tg-dlg-h { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.tg-dlg-t { flex: 1 1 auto; min-width: 0; font-size: 17px; font-weight: 700; color: #F1F5F9; }
+.tg-copy[data-state] { border-color: #22C55E; color: #22C55E; }
+.tg-x { width: 32px; height: 32px; padding: 0; display: flex; align-items: center;
+    justify-content: center; border: 0; border-radius: 8px; background: transparent;
+    color: #94A3B8; cursor: pointer; }
+.tg-x:hover { background: #15406B; color: #FFFFFF; }
+.tg-dlg-b { min-height: 120px; overflow: auto; padding: 12px 15px; white-space: pre-wrap;
+    overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.6; color: #E2E8F0;
+    background: #071525; border: 1px solid #2A4A6F; border-radius: 10px; user-select: text; }
+.tg-dlg-b.empty { color: #64748B; font-style: italic; }

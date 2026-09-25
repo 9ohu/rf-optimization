@@ -1,0 +1,16 @@
+# GSM / GERAN KPI thresholds.
+guards:
+  min_traffic_gb: 0.0
+  min_rows: 1
+
+kpis:
+  tch_assign_sr:     {warning: 98.5, critical: 96.0}
+  sdcch_block_rate:  {warning: 1.0,  critical: 2.0, direction: down}
+  tch_block_rate:    {warning: 2.0,  critical: 5.0, direction: down}
+  call_drop_rate:    {warning: 1.0,  critical: 2.0, direction: down}
+  ho_sr:             {warning: 96.0, critical: 92.0}
+  dl_quality_p_good: {warning: 95.0, critical: 90.0}
+  avg_rxlev_dl_dbm:  {warning: -85,  critical: -95}
+  ul_interference_band: {warning: 2.5, critical: 3.5, direction: down,
+                         note: "Mean interference band index 1-5"}
+  cell_avail_pct:    {warning: 99.9, critical: 99.0}

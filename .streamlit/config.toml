@@ -1,0 +1,54 @@
+# RF Optimizer app config
+[server]
+port = 8601
+headless = true
+fileWatcherType = "none"      # daily-tool: no hot reload, avoids churn on data files
+maxUploadSize = 250
+runOnSave = false
+# app/static: the map libraries (Leaflet, Leaflet.draw) are served by the app
+# itself, so the maps never wait on an outside CDN (slow on VPN)
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+# RF Optimization: deep navy, cyan accent, one status palette everywhere
+base = "dark"
+primaryColor = "#1597FF"
+backgroundColor = "#071525"
+secondaryBackgroundColor = "#0D2945"
+textColor = "#E2E8F0"
+borderColor = "#1E3A5F"
+linkColor = "#20BFFF"
+linkUnderline = false
+codeTextColor = "#E2E8F0"
+codeBackgroundColor = "#0B1F33"
+font = "'Segoe UI', system-ui, -apple-system, sans-serif"
+headingFont = "'Segoe UI', system-ui, -apple-system, sans-serif"
+baseFontSize = 14
+headingFontSizes = ["26px", "20px", "17px", "15px", "14px", "12px"]
+headingFontWeights = [650, 600, 600, 600, 600, 600]
+baseRadius = "10px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+blueColor = "#1597FF"
+greenColor = "#22C55E"
+yellowColor = "#FACC15"
+orangeColor = "#FB923C"
+redColor = "#EF4444"
+grayColor = "#94A3B8"
+dataframeBorderColor = "#1E3A5F"
+dataframeHeaderBackgroundColor = "#0B1F33"
+chartCategoricalColors = ["#20BFFF", "#22C55E", "#FACC15", "#FB923C", "#EF4444", "#A78BFA", "#94A3B8"]
+
+[theme.sidebar]
+backgroundColor = "#0B1F33"
+secondaryBackgroundColor = "#0D2945"
+textColor = "#E2E8F0"
+borderColor = "#1E3A5F"
+primaryColor = "#1597FF"
+
+[runner]
+fastReruns = true
