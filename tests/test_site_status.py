@@ -83,3 +83,27 @@ def test_a_planned_ticket_whose_site_the_ep_puts_on_air_is_judged_on_the_data():
     assert good == A.SOLVE
     assert text.startswith("The planned site BAS3214 is now on air.")
     assert "still" not in text
+
+
+def test_the_eps_REGION_column_is_read_as_the_file_writes_it(tmp_path):
+    """The EP's own header is `REGION` and its value `Region 5`."""
+    from rfopt.ingest.cellparams import load_cell_params
+
+    def sheet(ids, region, lte):
+        n = len(ids)
+        return pd.DataFrame({
+            ("Site ID" if lte else "Site Code"): ids, "Cell Name": [f"C_{i}" for i in ids],
+            ("Activation Status" if lte else "Status"): ["Activated"] * n,
+            "Latitude": [30.5] * n, "Longitude": [47.8] * n, "Azimuth": [0] * n,
+            ("M-DownTilt" if lte else "Mechanical Downtilt"): [2] * n, "REGION": region})
+
+    path = tmp_path / "ep.xlsx"
+    with pd.ExcelWriter(path) as w:
+        sheet(["BAS3214", "XYZ0001", "BAS0777"], ["Region 5", "Region 5", "Region 4"],
+              True).to_excel(w, sheet_name="LTE", index=False)
+        sheet(["NAS0555", "SAM0666"], ["Region 5", "Region 3"], False).to_excel(
+            w, sheet_name="UMTS", index=False)
+    ep = pd.concat([load_cell_params(path, technology=t, region=None, include_deactive=True,
+                                     use_cache=False).df for t in ("LTE", "UMTS")],
+                   ignore_index=True)
+    assert ep_on_air_sites(ep) == {"BAS3214", "XYZ0001", "NAS0555"}
