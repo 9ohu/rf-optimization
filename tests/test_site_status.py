@@ -1,0 +1,66 @@
+"""The EP tracker is part of the truth on whether a site is on air.
+
+The KMZ is not always updated when a site goes on air, so a site the EP lists
+as active is On Air everywhere the app reads a site's status — the Site Map,
+the Overview counts and the Sleep Analysis plan-site check — whatever the KMZ
+still says. The rule is global: nothing here is about one site.
+"""
+
+import pandas as pd
+
+from rfopt.ingest.site_status import apply_ep_status, ep_on_air_sites
+from rfopt.sleep import analysis as A
+
+
+def _ep():
+    return pd.DataFrame({
+        "site_id": ["BAS3214", "BAS3214", "NAS0100", "EMA0200", "SAM0300", "BAS0999"],
+        "latitude": [30.5, 30.5, 31.0, None, 30.9, 30.7],
+        "longitude": [47.8, 47.8, 46.2, None, 47.1, 47.6],
+        "status": ["Activated", "", "Deactivated", "Activated", "Activated", "On Air"],
+        "_sheet": ["LTE", "UMTS", "LTE", "LTE", "LTE Deactive", "GSM"],
+    })
+
+
+def test_the_ep_lists_a_site_on_air_from_its_active_cells_only():
+    on = ep_on_air_sites(_ep())
+    assert on == {"BAS3214", "BAS0999"}
+    # deactivated status, no position, or only on a Deactive sheet: not on air
+    assert not {"NAS0100", "EMA0200", "SAM0300"} & on
+    assert ep_on_air_sites(None) == frozenset()
+    assert ep_on_air_sites(pd.DataFrame()) == frozenset()
+
+
+def test_an_ep_active_site_is_on_air_whatever_the_kmz_says():
+    kmz = pd.DataFrame({"site_id": ["BAS3214", "BAS0480", "NAS0100"],
+                        "status": ["Planned", "On Air", "Planned"],
+                        "air": ["planned", "onair", "planned"]})
+    out = apply_ep_status(kmz, ep_on_air_sites(_ep()))
+    assert out.set_index("site_id")["status"].to_dict() == {
+        "BAS3214": "On Air", "BAS0480": "On Air", "NAS0100": "Planned"}
+    assert out.set_index("site_id")["air"].to_dict() == {
+        "BAS3214": "onair", "BAS0480": "onair", "NAS0100": "planned"}
+    assert kmz.loc[0, "status"] == "Planned"            # the input is left alone
+    assert apply_ep_status(kmz, frozenset()) is kmz     # no EP: the KMZ stands
+
+
+def test_the_plan_site_status_reads_the_ep_before_the_kmz():
+    on = ep_on_air_sites(_ep())
+    kmz = pd.DataFrame({"site_id": ["BAS3214", "NAS0100"], "status": ["Planned", "Planned"]})
+    assert A.plan_site_status("BAS3214", kmz, on) == A.ON_AIR        # KMZ behind
+    assert A.plan_site_status("bas0999", kmz, on) == A.ON_AIR        # not in the KMZ
+    assert A.plan_site_status("BAS3214", None, on) == A.ON_AIR       # no KMZ at all
+    assert A.plan_site_status("NAS0100", kmz, on) == A.NOT_ON_AIR    # both say planned
+    assert A.plan_site_status("NAS0100", kmz) == A.NOT_ON_AIR
+    assert A.plan_site_status("NAS0100", None, on) == ""             # nothing to read
+
+
+def test_a_planned_ticket_whose_site_the_ep_puts_on_air_is_judged_on_the_data():
+    on = ep_on_air_sites(_ep())
+    kmz = pd.DataFrame({"site_id": ["BAS3214"], "status": ["Planned"]})
+    plan = A.plan_site_status("BAS3214", kmz, on)
+    good, text = A.judge("planned", "BAS0480-2", None, A.Point(-92.0, 400, 8.0), plan,
+                         "BAS3214", metres=250.0)
+    assert good == A.SOLVE
+    assert text.startswith("The planned site BAS3214 is now on air.")
+    assert "still" not in text

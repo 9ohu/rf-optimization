@@ -248,7 +248,8 @@ def flow_facts(key: tuple) -> dict:
 @st.cache_resource(show_spinner="Checking the sleep tickets…", max_entries=2)
 def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
              _grids: list, _kmz: pd.DataFrame | None, _times: pd.Series,
-             _sites: pd.DataFrame | None = None) -> pd.DataFrame:
+             _sites: pd.DataFrame | None = None,
+             _on_air: frozenset = frozenset()) -> pd.DataFrame:
     """Every sleep ticket with its verdict, the RSRP measured where the
     subscriber was, the status of its planned site and the comment that says
     what the check read."""
@@ -275,7 +276,7 @@ def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
         plan = ""
         if r.plan_site:
             if r.plan_site not in plan_cache:
-                plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz)
+                plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz, _on_air)
             plan = plan_cache[r.plan_site]
         v, text = A.judge(r.check, r.serving, one, point, plan, r.plan_site,
                           _flow.get(site) if site else None, metres=r.metres)
@@ -314,7 +315,9 @@ def page_data():
     sites = site_points(W.ep_path() or "", kmz_file.sha1 if kmz_file else "", kmz)
     key = (hist_file.sha1, kpi_key, W.ep_key(), tuple(sorted(kept)),
            kmz_file.sha1 if kmz_file else "", len(times), len(sites))
-    df = analysed(key, history, facts, flow, grids, kmz, times, sites)
+    # the EP tracker's active sites: On Air whatever the KMZ says (the key
+    # already carries the EP file, so a new EP re-runs the checks)
+    df = analysed(key, history, facts, flow, grids, kmz, times, sites, R.ep_on_air())
     missing = []
     if not four:
         missing.append("4G KPI Data")

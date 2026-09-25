@@ -41,6 +41,7 @@ from streamlit_folium import st_folium
 from rfopt.actions.geometry import (angular_offset_deg, bearing_deg as _brg,
                                     haversine_m as _hav)
 from rfopt.ingest.hourly_kpi import KpiFileInfo
+from rfopt.ingest.site_status import apply_ep_status as _apply_ep_status
 from _kpi_map import (KPI_BAND as _KPI_BAND,
                       kpi_choices as _kpi_choices,
                       apply_scheme as _apply_scheme,
@@ -723,6 +724,9 @@ if ks is None or not len(ks.sectors):
     st.stop()
 
 SECT, CELLS = ks.sectors.copy(), ks.cells.copy()
+# the KMZ may be behind: a site the EP tracker lists as active is On Air
+_on_air = R.ep_on_air()
+SECT, CELLS = _apply_ep_status(SECT, _on_air), _apply_ep_status(CELLS, _on_air)
 for c in ("latitude", "longitude", "azimuth_deg", "antenna_height_m",
           "elec_tilt_deg", "ret_deg"):
     SECT[c] = _num(SECT[c])

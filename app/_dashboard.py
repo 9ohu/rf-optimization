@@ -133,11 +133,13 @@ def kpi() -> dict | None:
 
 
 @st.cache_resource(show_spinner="Reading the site list…", max_entries=2)
-def _kmz_sites(path: str) -> pd.DataFrame:
-    """Every KMZ site with its air status and position — the Sites map's own."""
+def _kmz_sites(path: str, on_air: frozenset = frozenset()) -> pd.DataFrame:
+    """Every KMZ site with its air status and position — the Sites map's own,
+    with a site the EP tracker lists as active counted On Air."""
     from rfopt.ingest.kmz_sites import load_kmz_sites
+    from rfopt.ingest.site_status import apply_ep_status
     ks = load_kmz_sites(path, region=None)
-    s = ks.sectors
+    s = apply_ep_status(ks.sectors, on_air)
     for c in ("latitude", "longitude"):
         s[c] = pd.to_numeric(s[c], errors="coerce")
     out = (s.dropna(subset=["latitude", "longitude"])
@@ -150,7 +152,7 @@ def _kmz_sites(path: str) -> pd.DataFrame:
 
 def sites() -> pd.DataFrame | None:
     path = R.kmz_path()
-    return _kmz_sites(path) if path else None
+    return _kmz_sites(path, R.ep_on_air()) if path else None
 
 
 def target():

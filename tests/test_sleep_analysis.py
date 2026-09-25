@@ -282,6 +282,31 @@ def test_flow_control_is_judged_on_the_counter_of_the_site():
     assert none == A.NOT_CHECKED
 
 
+def test_the_description_is_written_for_the_verdict_not_the_closure_code():
+    ev = _evidence()
+    # the PRB issue has come down: Solve, and nothing says it is still there
+    ok, text = A.judge("utilization", "BAS0001-1", ev[("BAS0001", 1.0)], None)
+    assert ok == A.SOLVE and "still" not in text
+    assert "The sector is no longer experiencing high PRB utilization" in text
+    ok, text = A.judge("interference", "BAS0001-3", ev[("BAS0001", 3.0)], None)
+    assert ok == A.SOLVE and "no longer experiencing interference" in text
+    ok, text = A.judge("coverage", "BAS0001-1", None, A.Point(-92.0, 400, 8.0))
+    assert ok == A.SOLVE and text.endswith(
+        "The area is no longer experiencing weak coverage, with an RSRP measurement of "
+        "-92.0 dBm.")
+    ok, text = A.judge("flow_control", "BAS0001-1", None, None, flow=(0, 0.0, 0.0))
+    assert ok == A.SOLVE and "no longer experiencing Flow Control issues" in text
+    # nothing to read: not said to be still there, nor gone
+    for check in ("utilization", "interference", "coverage", "flow_control"):
+        verdict, text = A.judge(check, "BAS0001-9", None, None)
+        assert verdict == A.NOT_CHECKED and "could not be verified" in text
+        assert "still" not in text and "no longer" not in text
+    # a planned site with no status to read is not called "still not on air"
+    verdict, text = A.judge("planned", "BAS0001-3", None, None, "", "BAS9999")
+    assert verdict == A.NOT_CHECKED and text.startswith(
+        "The status of the planned site BAS9999 could not be verified.")
+
+
 def test_nothing_to_read_is_not_checked_rather_than_solved():
     for check in ("utilization", "interference"):
         verdict, text = A.judge(check, "BAS0001-9", None, None)

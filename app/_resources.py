@@ -91,6 +91,23 @@ def kmz_file() -> S.StoredFile | None:
     return _one("kmz")
 
 
+def ep_on_air() -> frozenset:
+    """The Site IDs the active EP tracker lists as on air. Wherever the app
+    asks whether a site is on air, these are On Air whatever the KMZ says
+    (`rfopt.ingest.site_status`)."""
+    f = ep_file()
+    return _ep_on_air(str(f.path), f.sha1) if f else frozenset()
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def _ep_on_air(path: str, sha1: str) -> frozenset:
+    from rfopt.ingest.site_status import ep_on_air_sites
+    try:
+        return ep_on_air_sites(_shared.load_ep_all(path))
+    except Exception:
+        return frozenset()          # an unreadable EP changes nothing
+
+
 def target():
     """The active Daily Target (a TargetDataset), or None."""
     return load_active()
