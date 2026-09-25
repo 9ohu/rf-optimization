@@ -49,7 +49,7 @@ from _kpi_map import (KPI_BAND as _KPI_BAND,
                       threshold_rule as _threshold_rule)
 from _map_ui import (AIR as _AIR, AIR_LABEL as _AIR_LABEL,
                      MAP_CSS as _LEAFLET_CSS, HomeView as _HomeView,
-                     TowerMarkers as _TowerMarkers, fmt_value as _fmt_value,
+                     SiteLabels as _SiteLabels, TowerMarkers as _TowerMarkers, fmt_value as _fmt_value,
                      tower_points as _tower_points,
                      worst_sectors as _worst_sectors)
 from _coverage import (Coverage as _Coverage,
@@ -441,72 +441,6 @@ class _SectorHits(MacroElement):
         super().__init__()
         self._name = "SectorHits"
         self.points = json.dumps(points)
-
-
-class _SiteLabels(MacroElement):
-    """Site-name labels, client-side: only the sites in view, only zoomed in.
-
-    Avoids re-rendering 1,600 markers on every Streamlit run and the one-frame
-    lag of doing the in-view filter in Python.  Anchored high enough to clear
-    the tower badge underneath.
-    """
-    _template = Template("""
-        {% macro script(this, kwargs) %}
-        (function () {
-          var m = {{ this._parent.get_name() }};
-          var pts = {{ this.points }};
-          var MINZ = {{ this.min_zoom }}, CAP = 400, live = {}, timer = null;
-          var grp = L.layerGroup().addTo(m);
-          function esc(s){ return String(s).replace(/[&<>"]/g, function(c){
-            return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
-          function refresh() {
-            if (m.getZoom() < MINZ) { grp.clearLayers(); live = {}; return; }
-            var b = m.getBounds(), c = m.getCenter(), inView = [], keep = {};
-            for (var i = 0; i < pts.length; i++) {
-              if (!b.contains([pts[i][0], pts[i][1]])) continue;
-              var dy = pts[i][0] - c.lat, dx = pts[i][1] - c.lng;
-              inView.push([dx * dx + dy * dy, i]);
-            }
-            if (inView.length > CAP) {
-              inView.sort(function (a, b) { return a[0] - b[0]; });
-              inView.length = CAP;
-            }
-            for (var k = 0; k < inView.length; k++) {
-              var j = inView[k][1], p = pts[j];
-              keep[j] = 1;
-              if (live[j]) continue;
-              // sites at the very same position: one name under the other
-              var down = (p[3] || 0) * 14;
-              live[j] = L.marker([p[0], p[1]], {
-                interactive: false, keyboard: false,
-                icon: L.divIcon({className: 'sm-lbl', iconSize: [190, 16],
-                  iconAnchor: [95, {{ this.anchor_y }} - down],
-                  html: '<div style="font:700 11px system-ui;color:{{ this.fg }};'
-                    + 'text-align:center;white-space:nowrap;pointer-events:none;'
-                    + 'text-shadow:0 0 3px {{ this.halo }},0 0 3px {{ this.halo }}'
-                    + ',0 0 3px {{ this.halo }}">' + esc(p[2]) + '</div>'})
-              });
-              grp.addLayer(live[j]);
-            }
-            for (var id in live) {
-              if (!keep[id]) { grp.removeLayer(live[id]); delete live[id]; }
-            }
-          }
-          function later() { clearTimeout(timer); timer = setTimeout(refresh, 60); }
-          m.on('moveend zoomend', later);
-          m.whenReady(function () { setTimeout(refresh, 150); });
-        })();
-        {% endmacro %}
-    """)
-
-    def __init__(self, points, fg="#111", halo="#fff", min_zoom=13, anchor_y=23):
-        super().__init__()
-        self._name = "SiteLabels"
-        self.points = json.dumps(points)
-        self.fg = fg
-        self.halo = halo
-        self.min_zoom = int(min_zoom)
-        self.anchor_y = int(anchor_y)
 
 
 class _ViewKeep(MacroElement):
