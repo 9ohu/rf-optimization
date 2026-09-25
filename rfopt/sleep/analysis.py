@@ -295,6 +295,10 @@ class Evidence:
         return self._one(RSSI, "top")
 
     @property
+    def rssi_avg(self) -> float:
+        return self._one(RSSI, "mean")
+
+    @property
     def rssi_hours(self) -> int:
         return int(self._one(RSSI, "over", 0))
 
@@ -376,7 +380,8 @@ def evidence_of(hours: pd.DataFrame, cells: dict | None = None) -> dict:
 
 
 def site_flow_control(kpi: pd.DataFrame, column: str, sites: pd.Series) -> dict:
-    """site -> (hours with a flow-control drop, the worst hour's count). The 3G
+    """site -> (hours with a flow-control drop, the worst hour's count, the
+    average hour's count). The 3G
     export counts flow control for the NodeB, so this is per site."""
     if kpi is None or kpi.empty or not column or column not in kpi.columns:
         return {}
@@ -388,7 +393,8 @@ def site_flow_control(kpi: pd.DataFrame, column: str, sites: pd.Series) -> dict:
     if d.empty:
         return {}
     g = d.groupby("site")["v"]
-    return {s: (int((d.loc[d["site"].eq(s), "v"] > 0).sum()), float(g.max()[s]))
+    top, avg = g.max(), g.mean()
+    return {s: (int((d.loc[d["site"].eq(s), "v"] > 0).sum()), float(top[s]), float(avg[s]))
             for s in g.groups}
 
 
@@ -494,133 +500,125 @@ def plan_site_status(site: str, kmz_sites: pd.DataFrame | None) -> str:
 # --------------------------------------------------------------------------- #
 # the verdict, and the comment that shows its working
 # --------------------------------------------------------------------------- #
-def _hours_text(n: int, of: int) -> str:
-    return f"{n} hour{'s' if n != 1 else ''} of the {of} measured"
+_NA = "N/A"
 
 
-def _lead(serving: str, metres) -> str:
-    """How every comment opens: which sector served the ticket, and how far the
-    subscriber was from it."""
-    where = f"The serving sector is {serving}" if serving else "The ticket names no serving sector"
-    if metres is not None and not pd.isna(metres):
-        where += f" and the distance to the serving site is {fmt_metres(metres)}"
-    return where + ". "
+def _num(v, fmt: str, unit: str = "") -> str:
+    if v is None or pd.isna(v):
+        return _NA
+    return f"{v:{fmt}}{unit}"
 
 
-def _rsrp_text(point, *, lead: str = "The RSRP measurement at the subscriber's location is ") -> str:
-    if point is None:
-        return ""
-    return (f"{lead}{point.rsrp:.1f} dBm ({point.metres:.0f} m from the reported point, "
-            f"{point.mr:,} MRs). ")
+def _dist(metres) -> str:
+    return _NA if metres is None or pd.isna(metres) else fmt_metres(metres)
+
+
+def _rsrp(point) -> str:
+    return _NA if point is None else _num(point.rsrp, ".1f", " dBm")
+
+
+def _flow_parts(flow) -> tuple:
+    """(hours with a drop, worst hour, average hour) — an older 2-tuple has no average."""
+    if flow is None:
+        return 0, float("nan"), float("nan")
+    hours, worst = flow[0], flow[1]
+    avg = flow[2] if len(flow) > 2 else float("nan")
+    return hours, worst, avg
+
+
+def describe(check: str, serving: str, ev: Evidence | None, point: Point | None,
+             plan: str = "", plan_site: str = "", flow: tuple | None = None,
+             metres=None) -> str:
+    """The Description of a ticket, in the R5 team's fixed wording for its check.
+    Only the values change; a value the data does not carry reads N/A."""
+    lead = (f"The serving sector is {serving or _NA}, with a distance of {_dist(metres)} "
+            "from the user location.")
+    rsrp = _rsrp(point)
+    if check == "planned":
+        state = "is now on air" if plan == ON_AIR else "is still not on air"
+        return (f"The planned site {plan_site or _NA} {state}. {lead} "
+                f"The current RSRP measurement is {rsrp}.")
+    if check == "utilization":
+        mx = _num(ev.prb_max if ev is not None else None, ".1f", "%")
+        av = _num(ev.prb_avg if ev is not None else None, ".1f", "%")
+        return (f"{lead} The sector is still experiencing high PRB utilization, with a maximum "
+                f"value of {mx} and an average value of {av}. The RSRP measurement is {rsrp}.")
+    if check == "flow_control":
+        _, worst, avg = _flow_parts(flow)
+        return (f"{lead} The sector is still experiencing Flow Control issues, with a maximum "
+                f"value of {_num(worst, ',.0f')} and an average value of {_num(avg, ',.1f')}. "
+                f"The RSRP measurement is {rsrp}.")
+    if check == "interference":
+        mx = _num(ev.rssi_max if ev is not None else None, ".1f", " dBm")
+        av = _num(ev.rssi_avg if ev is not None else None, ".1f", " dBm")
+        return (f"{lead} The sector is still experiencing interference, with a maximum RTWP "
+                f"value of {mx} and an average value of {av}. The RSRP measurement is {rsrp}.")
+    return (f"{lead} The area is still experiencing weak coverage, with an RSRP measurement "
+            f"of {rsrp}.")
 
 
 def judge(check: str, serving: str, ev: Evidence | None, point: Point | None,
           plan: str = "", plan_site: str = "", flow: tuple | None = None,
           metres=None) -> tuple:
-    """(Solve / Not Solve / Not Checked, the comment that says why).
+    """(Solve / Not Solve / Not Checked, the Description).
 
-    The comment is written from the numbers the check read: where a number is
-    missing the sentence does not carry it, and no sentence is written for a
-    check that had nothing to read.
+    The verdict is read from the measured numbers against the operator's own
+    lines; the Description is written in the fixed format of `describe`.
     """
-    lead = _lead(serving, metres)
+    text = describe(check, serving, ev, point, plan, plan_site, flow, metres)
+    return _verdict(check, serving, ev, point, plan, flow), text
 
+
+def _verdict(check: str, serving: str, ev: Evidence | None, point: Point | None,
+             plan: str = "", flow: tuple | None = None) -> str:
     if check == "planned":
         if plan == NOT_ON_AIR:
-            return NOT_SOLVE, (f"The planned site {plan_site or 'named on the ticket'} is still "
-                               f"not on air. {lead}{_rsrp_text(point)}"
-                               "The area is served as it was when the ticket was put to "
-                               "sleep.").strip()
+            return NOT_SOLVE
         if plan == ON_AIR:
-            head = f"The planned site {plan_site} is on air. "
             if point is not None:
-                return _coverage_verdict(point, head + lead)
+                return _coverage_verdict(point)
             if ev is not None and ev.hours:
-                return _utilization_verdict(ev, serving, head + lead)
-            return NOT_CHECKED, (head + lead + "No coverage grid or KPI data covers the "
-                                 "subscriber's location, so the result is not checked.")
-        return NOT_CHECKED, (lead + "No planned site is named on the ticket, so its status "
-                             "cannot be read from the site KMZ.")
+                return _utilization_verdict(ev)
+        return NOT_CHECKED
 
     if check == "flow_control":
         if flow is None:
-            return NOT_CHECKED, (lead + "The loaded exports carry no flow-control counter for "
-                                 "this site, so flow control is not checked.")
-        hours, worst = flow
-        if hours:
-            return NOT_SOLVE, (lead + "The site is still applying flow control: "
-                               f"{hours} hour{'s' if hours != 1 else ''} with a flow-control "
-                               f"drop and {worst:,.0f} in the worst hour. " +
-                               _rsrp_text(point)).strip()
-        return SOLVE, (lead + "No flow-control drop was counted for this site in the measured "
-                       "period. " + _rsrp_text(point)).strip()
+            return NOT_CHECKED
+        return NOT_SOLVE if _flow_parts(flow)[0] else SOLVE
 
     if check == "interference":
         if ev is None or not ev.hours or pd.isna(ev.rssi_max):
-            return NOT_CHECKED, (lead + "The loaded export carries no UL interference for this "
-                                 "sector, so interference is not checked.")
-        rule = rule_of(RSSI)
-        line = rule.critical if rule is not None else -105.0
-        if ev.rssi_hours:
-            return NOT_SOLVE, (lead + "The sector is still suffering from high UL interference: "
-                               f"the worst hourly average is {ev.rssi_max:.1f} dBm, at or above "
-                               f"the {line:g} dBm line for "
-                               f"{_hours_text(ev.rssi_hours, ev.hours)}. "
-                               + _rsrp_text(point)).strip()
-        return SOLVE, (lead + "UL interference is back within the line: the worst hourly average "
-                       f"is {ev.rssi_max:.1f} dBm over {ev.hours} hours measured, below "
-                       f"{line:g} dBm. " + _rsrp_text(point)).strip()
+            return NOT_CHECKED
+        return NOT_SOLVE if ev.rssi_hours else SOLVE
 
     if check == "utilization":
         if not serving:
-            return NOT_CHECKED, ("The ticket names no serving sector that can be read as "
-                                 "site-sector, so its KPI cannot be checked.")
-        return _utilization_verdict(ev, serving, lead, point)
+            return NOT_CHECKED
+        return _utilization_verdict(ev)
 
     if check == "coverage":
         if point is None:
-            return NOT_CHECKED, (lead + "No measured coverage grid covers the subscriber's "
-                                 "reported location, so the coverage there is not checked.")
-        return _coverage_verdict(point, lead)
+            return NOT_CHECKED
+        return _coverage_verdict(point)
 
-    return NOT_CHECKED, (lead + "This closure code has no check of its own in the loaded "
-                         "data.").strip()
+    return NOT_CHECKED
 
 
-def _utilization_verdict(ev: Evidence | None, serving: str, lead: str, point=None) -> tuple:
+def _utilization_verdict(ev: Evidence | None) -> str:
     if ev is None or not ev.hours or pd.isna(ev.prb_max):
-        return NOT_CHECKED, (lead + "The loaded export carries no KPI for this sector, so its "
-                             "utilization is not checked.")
-    rule = rule_of(PRB)
-    line = rule.critical if rule is not None else 85.0
-    users = "" if pd.isna(ev.users_avg) else \
-        f"Connected users average {ev.users_avg:,.0f}. "
-    if ev.prb_hours:
-        return NOT_SOLVE, (lead + "The site is still suffering from a high PRB utilization "
-                           f"issue: the maximum PRB utilization reached {ev.prb_max:.0f}% and "
-                           f"stayed at or above {line:g}% for "
-                           f"{_hours_text(ev.prb_hours, ev.hours)}. " + users
-                           + _rsrp_text(point)).strip()
-    return SOLVE, (lead + "The high PRB utilization issue is no longer seen: the maximum PRB "
-                   f"utilization over the {ev.hours} hours measured is {ev.prb_max:.0f}%, below "
-                   f"the {line:g}% line. " + users + _rsrp_text(point)).strip()
+        return NOT_CHECKED
+    return NOT_SOLVE if ev.prb_hours else SOLVE
 
 
-def _coverage_verdict(point: Point, lead: str) -> tuple:
+def _coverage_verdict(point: Point) -> str:
     rule = rule_of(RSRP_RULE)
     line = rule.warning if rule is not None else -105.0
-    near = f"{point.metres:.0f} m from the reported point, {point.mr:,} MRs"
-    if point.rsrp <= line:
-        return NOT_SOLVE, (lead + "The coverage at the subscriber's location is still weak: the "
-                           f"measured RSRP is {point.rsrp:.1f} dBm ({near}), at or below the "
-                           f"{line:g} dBm line.").strip()
-    return SOLVE, (lead + "The coverage at the subscriber's location has recovered: the measured "
-                   f"RSRP is {point.rsrp:.1f} dBm ({near}), above the {line:g} dBm line.").strip()
+    return NOT_SOLVE if point.rsrp <= line else SOLVE
 
 
 __all__ = ["CHECK_KPI", "CLOSURE_CODES", "CODE_CHECK", "Evidence", "FLOW", "HOW", "KPI_NAME",
            "NOT_CHECKED", "NOT_SOLVE", "NOT_ON_AIR", "ON_AIR", "Point", "RTWP", "SOLVE", "Stat",
-           "angle_gap", "bearing", "canon_of", "check_of", "columns_for", "evidence_of",
+           "angle_gap", "bearing", "canon_of", "check_of", "columns_for", "describe", "evidence_of",
            "flow_control_column", "fmt_metres", "is_planned", "judge", "kpi_columns",
            "metres_between", "plan_site_status", "point_of", "rsrp_at", "rsrp_frame", "rule_of",
            "sector_hours", "site_flow_control", "sleep_population", "split_sector", "wake_after"]

@@ -124,6 +124,12 @@ CSS = """
 .sl-desc i { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
     margin-right: 7px; background: var(--c); }
 .st-key-sl_map iframe { border-radius: 8px; }
+.st-key-sl_map { position: relative; }
+.st-key-sl_fsbtn { position: absolute; top: 18px; right: 10px; z-index: 5; width: auto; }
+.st-key-sl_fsbtn button { min-height: 32px; height: 32px; width: 32px; padding: 0;
+    background: #0D2945; color: #E2E8F0; border: 1px solid #1E3A5F; border-radius: 9px;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, .45); }
+.st-key-sl_fsbtn button:hover { background: #15406B; color: #F8FAFC; border-color: #1E3A5F; }
 </style>
 """
 
@@ -223,7 +229,7 @@ def three_columns() -> dict:
 
 @st.cache_resource(show_spinner=False, max_entries=2)
 def flow_facts(key: tuple) -> dict:
-    """site -> (hours with a flow-control drop, the worst hour), from 3G."""
+    """site -> (hours with a flow-control drop, the worst hour, the average hour), from 3G."""
     three = three_g()
     if not three:
         return {}
@@ -463,10 +469,11 @@ def by_rf(df: pd.DataFrame, most: int = 8) -> str:
                      "#FB923C", "#64748B"])
 
 
-def by_user(df: pd.DataFrame, most: int = 5) -> str:
+def by_user(df: pd.DataFrame, most: int = 8) -> str:
     counts = df[df["user"].astype(str).str.strip().ne("")]["user"].value_counts().head(most)
     return bar_list([(k, int(v)) for k, v in counts.items()], len(df),
-                    ["#1597FF", "#20BFFF", "#A78BFA", "#F472B6", "#22C55E"])
+                    ["#1597FF", "#20BFFF", "#A78BFA", "#F472B6", "#22C55E", "#FBBF24",
+                     "#FB923C", "#64748B"])
 
 
 def legend() -> str:
@@ -777,6 +784,70 @@ def _wedge(lat: float, lon: float, az: float, *, hbw: float = 60.0, metres: floa
 
 SATELLITE, COVERAGE = "Satellite", "Coverage"
 
+# full screen: the map panel — its title, the basemap switch, the map and the
+# distance / azimuth note — pinned over the whole window. The map's frame is
+# stretched here and the map inside fills its frame, so the view is kept.
+FS_CSS = """
+<style>
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
+header[data-testid="stHeader"], [data-testid="stToolbar"] { display: none !important; }
+section[data-testid="stMain"] { overflow: hidden !important; }
+.st-key-sl_mapbox {
+    position: fixed !important; inset: 0 !important; z-index: 2147483000 !important;
+    background: #071525; padding: 12px 16px !important; overflow-y: auto;
+    gap: 8px !important;
+}
+.st-key-sl_mapbox .st-key-sl_map iframe { height: calc(100vh - 128px) !important; }
+</style>
+"""
+
+# drawn inside the map's own frame: the dark legend and popup cards the Sites
+# map uses, kept apart from each other and from the map's controls
+MAP_FRAME_CSS = """
+html, body { margin: 0; }
+#map_div, #map_div2, .folium-map { height: 100vh !important; }
+.sm-legend { max-height: calc(100vh - 150px); overflow-y: auto; min-width: 0 !important;
+    max-width: calc(100vw - 24px); box-sizing: border-box; font-size: 11px !important;
+    padding: 7px 9px 6px !important; }
+.sm-legend .sm-lg-t, .sm-legend .sm-lg-row, .sm-legend .sm-lg-note { white-space: normal; }
+.sm-legend .sm-lg-r { min-width: 0 !important; }
+.sl-pop-open .sm-legend > :not(.sm-lg-t) { display: none; }
+.sl-pop-open .sm-legend .sm-lg-t { margin: 0; padding: 0; border: 0; }
+.leaflet-popup-content { overflow-wrap: anywhere; max-height: calc(100vh - 90px);
+    overflow-y: auto; }
+.rf-cov-pop .rf-kvs b { white-space: normal; }
+.leaflet-control-attribution { max-width: 45vw; font-size: 10px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+.leaflet-control-attribution:hover { white-space: normal; }
+"""
+
+
+def _popup_fold():
+    from branca.element import MacroElement
+    from jinja2 import Template
+
+    class PopupFold(MacroElement):
+        """While a coverage read-out is open the legend folds to its title, so
+        the two never sit on top of each other."""
+        _template = Template("""
+            {% macro script(this, kwargs) %}
+            (function () {
+              var m = {{ this._parent.get_name() }}, c = m.getContainer();
+              m.on('popupopen', function () { c.classList.add('sl-pop-open'); });
+              m.on('popupclose', function () { c.classList.remove('sl-pop-open'); });
+            })();
+            {% endmacro %}
+        """)
+    return PopupFold()
+
+
+def _fs_button(fs: bool) -> None:
+    with st.container(key="sl_fsbtn"):
+        st.button(":material/fullscreen_exit:" if fs else ":material/fullscreen:",
+                  key="sl_fs_toggle", help="Exit full screen" if fs else "Full screen",
+                  on_click=lambda: st.session_state.update(
+                      sl_fs=not st.session_state.get("sl_fs", False)))
+
 
 def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
     """Panel 4: the site, the sector that served the ticket, the sites around
@@ -795,6 +866,8 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
     if len(sectors):
         site_at = (float(sectors["latitude"].iloc[0]), float(sectors["longitude"].iloc[0]))
     if here is None and site_at is None:
+        if st.session_state.get("sl_fs"):
+            _fs_button(True)
         st.html('<div class="sl-note">No location on the ticket and no site in the EP '
                 "tracker — nothing to draw.</div>")
         return
@@ -804,6 +877,13 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
     # the imagery under both, with the measured grid drawn over it on Coverage
     # — the same pair the Sites map offers
     add_basemap(fmap, "Esri.WorldImagery")
+    from _kpi_map import LEGEND_CSS
+    from _map_ui import MAP_CSS
+    fmap.get_root().header.add_child(
+        folium.Element(f"<style>{MAP_CSS}{LEGEND_CSS}{MAP_FRAME_CSS}</style>"))
+    # while a coverage read-out is open the legend folds to its title, so the
+    # two never sit on top of each other
+    fmap.add_child(_popup_fold())
     if basemap == COVERAGE:
         kept = R.coverage()
         if kept:
@@ -854,7 +934,9 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
     seen = [list(p) for p in (here, site_at) if p is not None]
     if len(seen) > 1:
         fmap.fit_bounds(seen, padding=(40, 40))
+    fs = bool(st.session_state.get("sl_fs"))
     with st.container(key="sl_map"):
+        _fs_button(fs)
         st_folium(fmap, height=height, use_container_width=True, returned_objects=[],
                   key=f"sl_map_{row['hpsm_id']}_{basemap}")
     st.html(geometry_note(row, site_at, here, az))
