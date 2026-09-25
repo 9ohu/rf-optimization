@@ -33,6 +33,7 @@ from rfopt.complaints.noc import (NAMES, PRIMARY, SECONDARY, build_indicators, f
                                   indicator_columns, observe_indicators,
                                   site_timeline, ticket_tiles, tile_counts,
                                   window_series, _CANON_TILE)
+from rfopt.complaints.relocate import fmt_metres
 from rfopt.complaints.target_store import TargetFormatError, parse_target, source_columns
 from rfopt.complaints.ticket_type import (NEW, REOPEN, TYPES, UP_OF_SLEEP,
                                           UP_OF_SLEEP_TEXT, ticket_type, type_label)
@@ -327,10 +328,9 @@ def _site_table(path: str) -> pd.DataFrame:
 
 
 @st.cache_resource(show_spinner="Reading the KPI exports…", max_entries=2)
-def _load_tracks(key: tuple, _sources: dict):
-    """The judged KPI tracks (they decide the classification) and the context
-    indicators (shown next to them), from one read of each export of the
-    active KPI Data. The files of one technology are read as one export
+def _read_frames(key: tuple, _sources: dict):
+    """One read of each export of the active KPI Data: the judged frames and
+    the context frames. The files of one technology are read as one export
     (`merge_hourly`), so an hour two files share is one point of the track.
     `key`: the files' content hashes; `_sources`: hash → (name, path), a
     technology's most recent file last (`R.kpi_groups`)."""
@@ -362,7 +362,35 @@ def _load_tracks(key: tuple, _sources: dict):
             frames.append((kind, name, raw, judged))
         if context:
             extra.append((name, raw, context))
+    return frames, extra
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def _load_tracks(key: tuple, _sources: dict):
+    """The judged KPI tracks (they decide the classification) and the context
+    indicators (shown next to them), per site."""
+    frames, extra = _read_frames(key, _sources)
     return build_tracks(frames), build_indicators(extra)
+
+
+@st.cache_resource(show_spinner="Reading the KPIs per sector…", max_entries=2)
+def _load_sector_tracks(key: tuple, _sources: dict):
+    """The same judged KPI tracks per sector — what a ticket re-analysed at
+    the user's location is judged on (`rfopt.complaints.relocate`)."""
+    from rfopt.complaints.relocate import sector_tracks
+    return sector_tracks(_read_frames(key, _sources)[0])
+
+
+def window_setting() -> tuple[str, float]:
+    """The Correlation Window chosen on Delay Tickets Analysis (or its default):
+    every page that shows a Daily Target ticket judges it on the same window."""
+    kept = st.session_state.get(_KEEP, {})
+    label = kept.get("ca_win") if kept.get("ca_win") in WINDOWS else "±2 hours"
+    if WINDOWS[label] is None:
+        h = kept.get("ca_win_custom")
+        h = float(h) if isinstance(h, (int, float)) and 0.25 <= h <= 24 else 2.0
+        return f"±{h:g} h", h
+    return label, float(WINDOWS[label])
 
 
 @st.cache_resource(show_spinner="Correlating the tickets with the network…", max_entries=6)
@@ -625,25 +653,32 @@ def open_workspace(subtitle: str, *, search_key: str, placeholder: str):
         else:
             window_h = float(WINDOWS[win_label])
 
-    kpi_files = {f.sha1: (f.name, path)
-                 for _, group in R.kpi_groups() for path, _, f in group}
-    cov_kept = R.coverage()
-
-    # --------------------------------------------------------------------------- #
-    # data
-    # --------------------------------------------------------------------------- #
     if active is None:
         _card("Daily Target Tickets", [], icon="file",
               note="No Daily Target yet: upload the day's Target Excel once in Data "
                    "Resources → Complaint Data. It is kept until a new version is applied.")
         R.link("Open Data Resources")
         st.stop()
-
     try:
-        tickets = _load_tickets(active.sha1, active)
+        return load_workspace(win_label, window_h, q)
     except TargetFormatError as exc:
         st.error(f"The stored Daily Target could not be read: {exc}")
         st.stop()
+
+
+def load_workspace(win_label: str, window_h: float, q: str = ""):
+    """The analysed Daily Target — what `open_workspace` shows, without its
+    header or sidebar, so another page (the Sites map) reads the very same
+    analysis. None when there is no Daily Target; a ticket whose user location
+    was approved is re-analysed at it (`_relocate`, `relocations`)."""
+    active = R.target()
+    if active is None:
+        return None
+    kpi_files = {f.sha1: (f.name, path)
+                 for _, group in R.kpi_groups() for path, _, f in group}
+    cov_kept = R.coverage()
+
+    tickets = _load_tickets(active.sha1, active)
 
     source = (_load_source(active.sha1, active, tuple(tickets["_row"]))
               if "_row" in tickets.columns else pd.DataFrame(index=tickets.index))
@@ -651,6 +686,17 @@ def open_workspace(subtitle: str, *, search_key: str, placeholder: str):
     tracks, inds = _load_tracks(kpi_key, kpi_files) if kpi_files else ([], [])
     analysis = _analyse(active.sha1, kpi_key, window_h, tickets, tracks)
     noc_rows = _noc_all(active.sha1, kpi_key, window_h, tickets, analysis, inds)
+    # the tickets re-analysed at an approved user location replace their general
+    # analysis everywhere: the table, the counts, Ticket Details and the Sites map
+    re_by_i = relocations(active.sha1, tickets, kpi_key, kpi_files, tracks, window_h, cov_kept)
+    if re_by_i:
+        analysis, noc_rows = list(analysis), list(noc_rows)
+        for i, r in re_by_i.items():
+            t = tickets.iloc[i]
+            analysis[i] = r.analysis
+            noc_rows[i] = ticket_tiles(r.analysis, observe_indicators(
+                t["site_id"] if isinstance(t["site_id"], str) else "", t["problem_local"],
+                inds, window_h))
 
     ep_path = _ep_path()
     sites = _site_table(ep_path) if ep_path else pd.DataFrame()
@@ -720,6 +766,20 @@ def open_workspace(subtitle: str, *, search_key: str, placeholder: str):
     T["Problem Type"] = _col(tickets, "affected_service").map(_clean).replace("", NA)
     T["KPI (window)"] = [a.kpi_summary or "–" for a in analysis]
     T["RSRP"] = [f"{rsrp[s]['median']:.0f} dBm (site area)" if s in rsrp else NA for s in sid]
+    for i, r in re_by_i.items():
+        T.iat[i, T.columns.get_loc("RSRP")] = (f"{r.rsrp:.1f} dBm (user location)"
+                                               if r.rsrp is not None else NA)
+    # the serving sector: the one at the approved user location, else the
+    # sector of the worst cell the general analysis found
+    T["Serving Sector"] = [
+        (re_by_i[i].sector_id or NA) if i in re_by_i else (general_sector(s, a) or NA)
+        for i, (s, a) in enumerate(zip(sid, analysis))]
+    T["Distance"] = [fmt_metres(re_by_i[i].server.distance_m)
+                     if i in re_by_i and re_by_i[i].server else NA for i in range(len(T))]
+    T["Description"] = [re_by_i[i].description if i in re_by_i else a.site_issue
+                        for i, a in enumerate(analysis)]
+    T["User Location"] = [f"{re_by_i[i].lat:.5f}, {re_by_i[i].lon:.5f}" if i in re_by_i else NA
+                          for i in range(len(T))]
     T["Network Analysis"] = [a.classification for a in analysis]
     T["Problem Detected"] = [a.problem_detected for a in analysis]
     T["Problem"] = [a.problem_type or "–" for a in analysis]
@@ -753,7 +813,74 @@ def open_workspace(subtitle: str, *, search_key: str, placeholder: str):
         analysis=analysis, noc_rows=noc_rows, sites=sites, rsrp=rsrp, cov_kept=cov_kept,
         win_label=win_label, window_h=window_h, bands=BANDS, T=T, n=n,
         has_reopen=has_reopen, per_site=_per_site, site_names=SITE_NAMES,
-        tt_options=TT_OPTIONS, tt_colours=TT_COLOURS)
+        tt_options=TT_OPTIONS, tt_colours=TT_COLOURS, re=re_by_i)
+
+
+def worst_areas(T: pd.DataFrame, top: int = 5) -> pd.DataFrame:
+    """The Sup Districts with the most affected tickets: tickets with a
+    (possible) technical issue first, then all tickets, then delay tickets.
+    Main Issue: the problem most of the area's technical tickets share."""
+    cols = ["#", "Sup District", "Total Tickets", "Delay", "Technical Issues", "Main Issue"]
+    d = T[T["Sup District"] != NA]
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d = d.assign(_tech=d["Network Analysis"].isin([TECHNICAL, POSSIBLE]),
+                 _delay=d["Delay"].eq(DELAYED))
+
+    def main_issue(part: pd.DataFrame) -> str:
+        p = part.loc[part["_tech"], "Problem"]
+        p = p[p.ne("–") & p.ne("")]
+        return str(p.value_counts().index[0]) if len(p) else "No network issue"
+
+    g = d.groupby("Sup District", sort=False)
+    out = pd.DataFrame({"Total Tickets": g.size(), "Delay": g["_delay"].sum().astype(int),
+                        "Technical Issues": g["_tech"].sum().astype(int),
+                        "Main Issue": [main_issue(p) for _, p in g]})
+    out = (out.sort_values(["Technical Issues", "Total Tickets", "Delay"], ascending=False,
+                           kind="stable")
+           .head(top).rename_axis("Sup District").reset_index())
+    out.insert(0, "#", range(1, len(out) + 1))
+    return out[cols]
+
+
+def general_sector(site: str, analysis) -> str:
+    """The sector of the worst cell behind a general (site-level) analysis:
+    the lead KPI's worst cell, named as the hourly loader names sectors."""
+    from rfopt.complaints.relocate import lead_check, sector_of
+    lead = lead_check(analysis)
+    return sector_of(site, lead.worst_obj) if lead is not None and site and site != NA else ""
+
+
+def relocations(sha: str, tickets, kpi_key: tuple, kpi_files: dict, tracks,
+                window_h: float, cov_kept: dict) -> dict:
+    """Row -> the re-analysis at the approved user location, for every ticket
+    of the Daily Target that has one (`_relocate`)."""
+    import _relocate as RL
+    saved = RL.load()
+    if not saved:
+        return {}
+    ids = tickets["ticket_id"].astype(str).tolist()
+    rows = {i: saved[t] for i, t in enumerate(ids) if t in saved}
+    if not rows:
+        return {}
+    kmz, ep = R.kmz_file(), R.ep_file()
+    data_key = (sha, kmz.sha1 if kmz else "", ep.sha1 if ep else "")
+    return _relocated(tuple(sorted((ids[i], v["lat"], v["lon"]) for i, v in rows.items())),
+                      data_key, kpi_key, float(window_h), tuple(sorted(cov_kept)), tickets,
+                      rows, kpi_files, tracks, cov_kept)
+
+
+@st.cache_resource(show_spinner="Re-analysing at the user location…", max_entries=4)
+def _relocated(sig: tuple, data_key: tuple, kpi_key: tuple, window_h: float, cov_key: tuple,
+               _tickets, _rows: dict, _kpi_files: dict, _tracks, _cov: dict) -> dict:
+    import _relocate as RL
+    from rfopt.complaints.relocate import reanalyse
+    sec_tracks = _load_sector_tracks(kpi_key, _kpi_files) if _kpi_files else []
+    sectors = RL.serving_sectors()
+    grids = [_cov[k] for k in cov_key]
+    return {i: reanalyse(float(v["lat"]), float(v["lon"]), _tickets.iloc[i]["problem_local"],
+                         sectors, sec_tracks, _tracks, window_h, grids)
+            for i, v in _rows.items()}
 
 
 CA2_CSS = """
@@ -851,16 +978,20 @@ def evidence_items(ctx, sel) -> list[dict]:
     inside the window. Values are the site's worst cell per hour for a level, the
     site's total per hour for a count."""
     site, pt = sel["Site ID"], sel["Problem Time"]
-    if site == NA or pd.isna(pt):
+    i = int(sel["_i"])
+    re_ = getattr(ctx, "re", {}).get(i)
+    # a ticket re-analysed at the user location: its serving sector's own KPIs
+    tracks, key = (re_.tracks, re_.key) if re_ is not None else (ctx.tracks, site)
+    if (key == NA or not key) or pd.isna(pt):
         return []
-    a = ctx.analysis[int(sel["_i"])]
+    a = ctx.analysis[i]
     items = []
     for c in sorted([c for c in a.checks if c.sev > 0], key=lambda c: (-c.sev, -c.breach_hours)):
-        tr = next((t for t in ctx.tracks if t.label == c.label and t.source == c.source
-                   and site in t.by_site), None)
+        tr = next((t for t in tracks if t.label == c.label and t.source == c.source
+                   and key in t.by_site), None)
         if tr is None:
             continue
-        times, vals, _ = tr.by_site[site]
+        times, vals, _ = tr.by_site[key]
         wt, wv, lo, hi = window_series(times, vals, pt, ctx.window_h)
         all_v = np.asarray(vals, dtype=float)
         items.append(dict(key=c.canon, tag=_CANON_TILE.get(c.canon, c.label), name=c.label,
@@ -873,7 +1004,7 @@ def evidence_items(ctx, sel) -> list[dict]:
                           resolution=c.resolution, resolution_note=c.resolution_note,
                           before=c.before, note=""))
     for tr, ic in zip(ctx.inds, observe_indicators(site, pt, ctx.inds, ctx.window_h)):
-        if ic.sev <= 0 or site not in tr.by_site:
+        if site == NA or ic.sev <= 0 or site not in tr.by_site:
             continue
         times, vals = tr.by_site[site]
         wt, wv, lo, hi = window_series(times, vals, pt, ctx.window_h)
@@ -1086,6 +1217,39 @@ def _canonical_sources(columns) -> set:
     return used
 
 
+def ticket_info_rows(ctx, sel) -> list:
+    """The Ticket Information fields of one ticket, as Ticket Details shows
+    them — the Sites map's ticket panel reads the same list."""
+    i = int(sel["_i"])
+    raw = ctx.tickets.iloc[i]
+    have = set(ctx.tickets.columns)
+    pt_txt = f"{sel['Problem Time']:%d %b %Y %H:%M}" if pd.notna(sel["Problem Time"]) else NA
+
+    def col(name: str, fmt_=None):
+        if name not in have:
+            return None
+        v = raw.get(name)
+        if fmt_ is not None:
+            return fmt_(v)
+        return _clean(v) or "—"
+
+    def when(v) -> str:
+        if v is None or pd.isna(v):
+            return "—"
+        t = local_time(pd.Series([v])).iloc[0]
+        return f"{t:%d %b %Y %H:%M}" if pd.notna(t) else "—"
+
+    return [(k, v) for k, v in [
+        ("Ticket ID", sel["Ticket ID"]), ("Complaint (HPSM) ID", col("hpsm_id")),
+        ("Ticket type", sel["Ticket Type"]), ("Reopen count", col("reopen")),
+        ("Ticket type in the file", col("ticket_kind")),
+        ("SLA status", col("sla_status")), ("Delay", sel["Delay"] if sel["Delay"] != NA else None),
+        ("SLA target time", col("sla_target")), ("Created at", col("create_time", when)),
+        ("Problem time", pt_txt), ("Opened by", col("opened_by")), ("User", col("user")),
+        ("IS CMC", col("is_cmc")), ("Affected service", col("affected_service"))]
+        if v is not None]
+
+
 def render_ticket(ctx, sel) -> None:
     """One ticket from beginning to end: its record (ticket, complainant,
     network, technical), then the NOC analysis — incident summary, KPI tiles,
@@ -1132,14 +1296,7 @@ def render_ticket(ctx, sel) -> None:
                   f'{_esc(sel["Governorate"])} · problem {_esc(pt_txt)} · {_esc(ctx.active.name)}'
                   "</span></div>")
 
-    ticket_rows = rows([
-        ("Ticket ID", sel["Ticket ID"]), ("Complaint (HPSM) ID", col("hpsm_id")),
-        ("Ticket type", sel["Ticket Type"]), ("Reopen count", col("reopen")),
-        ("Ticket type in the file", col("ticket_kind")),
-        ("SLA status", col("sla_status")), ("Delay", sel["Delay"] if sel["Delay"] != NA else None),
-        ("SLA target time", col("sla_target")), ("Created at", col("create_time", when)),
-        ("Problem time", pt_txt), ("Opened by", col("opened_by")), ("User", col("user")),
-        ("IS CMC", col("is_cmc")), ("Affected service", col("affected_service"))])
+    ticket_rows = ticket_info_rows(ctx, sel)
     complainant_rows = rows([("MSISDN", col("msisdn"))])
     cells = site_cells(site) if site else ""
     info = ctx.sites.loc[site] if site and site in ctx.sites.index else None
@@ -1163,6 +1320,17 @@ def render_ticket(ctx, sel) -> None:
         ("Site / network analysis", _esc(a.site_issue)),
         ("Resolution", _esc(a.resolution)), ("Confidence", _esc(a.confidence or "—")),
         ("Evidence", _esc(a.evidence or "—"))]
+    re_ = ctx.re.get(i)
+    if re_ is not None:
+        # approved on the Sites map: the result at the subscriber's location
+        technical_rows[:0] = [
+            ("User location", _esc(f"{re_.lat:.5f}, {re_.lon:.5f} (approved)")),
+            ("Serving sector", _esc(sel["Serving Sector"])),
+            ("Distance", _esc(sel["Distance"])),
+            ("Azimuth difference",
+             _esc(f"{re_.server.az_diff_deg:.0f}°" if re_.server else "—")),
+            ("RSRP", _esc(sel["RSRP"])),
+            ("Description", _esc(re_.description))]
     if a.resolution_evidence:
         technical_rows.append(("Resolution evidence", _esc(a.resolution_evidence)))
     if "comment" in have:

@@ -46,16 +46,13 @@ from _kpi_map import (KPI_BAND as _KPI_BAND,
                       kpi_choices as _kpi_choices,
                       apply_scheme as _apply_scheme,
                       band_scheme as _band_scheme,
-                      sector_values as _sector_values,
-                      threshold_rule as _threshold_rule)
+                      sector_values as _sector_values)
 from _map_ui import (AIR as _AIR, AIR_LABEL as _AIR_LABEL,
                      MAP_CSS as _LEAFLET_CSS, HomeView as _HomeView,
-                     SiteLabels as _SiteLabels, TowerMarkers as _TowerMarkers, fmt_value as _fmt_value,
-                     tower_points as _tower_points,
-                     worst_sectors as _worst_sectors)
+                     SiteLabels as _SiteLabels, TowerMarkers as _TowerMarkers,
+                     tower_points as _tower_points)
 from _coverage import (Coverage as _Coverage,
-                       CoverageLayer as _CoverageLayer, compact as _cov_compact,
-                       region_of as _cov_region)
+                       CoverageLayer as _CoverageLayer, compact as _cov_compact)
 from _location_pick import LocationPick as _LocationPick
 from _kpi_time import js_json as _js_json, kpi_unit as _kpi_unit, parse_tip as _parse_tip
 from _sector_drawer import (KpiTimeline as _KpiTimeline, MapAssets as _MapAssets,
@@ -68,8 +65,11 @@ from _map_assets import (MousePositionControl as _MousePosition,
                          add_overlay as _add_overlay, pin_icon as _pin_icon,
                          use_local_libraries as _use_local_libraries)
 import _resources as R
+import _complaints as _C
+import _relocate as _RL
+from rfopt.complaints.relocate import lead_check as _lead_check, parse_latlon as _parse_loc
 from _ui import (card as _card, file_status as _file_status, header as _header,
-                 kpi_cards as _kpi_cards, side_stat as _side_stat,
+                 kpi_cards as _kpi_cards,
                  swatch as _swatch, title_html as _title_html)
 
 _M_PER_DEG = 111_320.0
@@ -156,6 +156,12 @@ _MAP_CSS = """
     background: #15406B; color: #fff; border-color: #1597FF;
 }
 .st-key-sm_kpi_list label p { font-size: 12.5px; }
+/* the ticket's analysis beside its information: each value under its label */
+.ca-kv.sm-an { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+.ca-kv.sm-an span { font-size: 11px; margin-top: 5px; }
+.ca-kv.sm-an b { text-align: left; min-width: 0; overflow-wrap: anywhere; }
+.ca-kv.sm-an .ca-badge { white-space: normal; }
+.sm-an-note { color: #64748B; font-size: 11px; margin-top: 8px; }
 .st-key-sm_drawer_payload { display: none !important; }
 
 /* KPI selection floating on the map (full screen only), beside the layers */
@@ -201,6 +207,7 @@ section[data-testid="stMain"] { overflow: hidden !important; }
     border: 0 !important;
 }
 .st-key-rf_hdr_brand, .st-key-rf_hdr_chips { display: none !important; }
+.st-key-sm_fs_hidden { display: none !important; }
 .st-key-rf_header [data-testid="stTextInputRootElement"] {
     box-shadow: 0 3px 12px rgba(0, 0, 0, .5);
 }
@@ -601,6 +608,8 @@ class _Ruler(MacroElement):
 # --------------------------------------------------------------------------- #
 fs = bool(st.session_state.get("sm_fs"))
 st.html(_MAP_CSS + (_FS_CSS if fs else ""))
+st.html(_C._CSS)                # the Delay Tickets Analysis cards, charts and badges
+st.html(_C.CA2_CSS)
 
 q_raw = (_header("RF Optimization", "Sites · sectors on the map",
                  search_key="sm_q",
@@ -609,16 +618,228 @@ q_raw = (_header("RF Optimization", "Sites · sectors on the map",
 cards_slot = st.container()
 msg_slot = st.container()
 
-with st.sidebar:
-    view_box = st.expander("Current view", icon=":material/tune:", expanded=True)
-    kpi_box = st.expander("KPI analysis", icon=":material/monitoring:",
-                          expanded=True)
-    cov_box = st.expander("LTE coverage", icon=":material/signal_cellular_alt:",
-                          expanded=True)
+# the map, and beside it: 1 Map layers & Analysis (Current view and KPI analysis
+# folded into it), 2 Ticket ID, 3 User Location. In full screen the layer
+# controls float on the map, and the view / KPI widgets are kept out of sight.
+if not fs:
+    map_area, side = st.columns([3.2, 1], gap="small")
+    with side.container(key="rf_card_layers", border=True):
+        st.html(_title_html("Map layers & Analysis", "layers"))
+        ctl_slot = st.container()
+        view_box = st.expander("Current view", icon=":material/tune:", expanded=False)
+        kpi_box = st.expander("KPI analysis", icon=":material/monitoring:",
+                              expanded=False)
+    ticket_card = side.container(key="rf_card_sm_ticket", border=True)
+    loc_card = side.container(key="rf_card_sm_loc", border=True)
+    legend_slot = None                     # set under the KPI list, below
+else:
+    map_area = st.container()
+    _hidden = st.container(key="sm_fs_hidden")
+    view_box, kpi_box = _hidden.container(), _hidden.container()
+    ctl_slot = ticket_card = loc_card = legend_slot = None
 
 # every file comes from Data Resources (the Current version of each resource)
 kmz_path, ep_path = R.kmz_path(), R.ep_path()
 kmz_name = R.kmz_file().name if kmz_path else None
+
+def _analysis_html(tk: dict) -> str:
+    """The ticket's analysis as it stands: stage 1 (general, site level) or
+    stage 2 (at the approved user location)."""
+    row, a, re_, lead = tk["row"], tk["analysis"], tk["re"], tk["lead"]
+    if re_ is not None:
+        at = _RL.load().get(str(row["Ticket ID"]), {}).get("at", "")
+        stage = "2 · User location" + (f" (approved {at})" if at else "")
+        sector = tk["sector"] or "—"
+    else:
+        stage = "1 · General analysis (site level)"
+        sector = f"{tk['sector']} (worst cell)" if tk["sector"] else "—"
+    if lead is not None:
+        kpi = f"{lead.label} {_C.fmt(lead.worst, lead.unit)} · {lead.status}"
+    elif a.classification == _C.NO_ISSUE:
+        kpi = "No KPI above its threshold"
+    else:
+        kpi = "—"
+    status = _C._badge(a.classification, _C.CLASS_COLOUR[a.classification])
+    if a.resolution:
+        status += f" <small>{_C._esc(a.resolution)}</small>"
+    pairs = [("Stage", _C._esc(stage)), ("Serving sector", _C._esc(sector)),
+             ("Distance", _C._esc(row["Distance"])),
+             ("Azimuth difference", _C._esc(f"{re_.server.az_diff_deg:.0f}°"
+                                            if re_ is not None and re_.server else _C.NA)),
+             ("RSRP", _C._esc(row["RSRP"])), ("KPI result", _C._esc(kpi)),
+             ("Status", status), ("Description", _C._esc(row["Description"]))]
+    return ('<div class="ca-kv sm-an">'
+            + "".join(f"<span>{_C._esc(k)}</span><b>{v}</b>" for k, v in pairs)
+            + f'</div><div class="sm-an-note">Correlation window {_C._esc(WIN_LABEL)} — '
+              "as on Delay Tickets Analysis.</div>")
+
+
+def _worst_areas_panel() -> None:
+    st.html(_title_html("Worst Areas", "alert", subtitle="by Sup District"))
+    if CTX is None:
+        st.caption(ctx_error or "No Daily Target in Data Resources → Complaint Data.")
+        return
+    areas = _C.worst_areas(CTX.T)
+    if areas.empty:
+        st.caption("No ticket of the Daily Target is placed in a Sup District.")
+        return
+    st.dataframe(areas, hide_index=True, width="stretch",
+                 height=min(38 + 35 * len(areas), 260),
+                 column_config={"#": st.column_config.NumberColumn("#", width="small")})
+    st.caption(f"Daily Target tickets ranked by technical issues ({WIN_LABEL} window), "
+               "then by tickets.")
+
+
+def _ticket_info_panel() -> None:
+    st.html(_title_html("Ticket Information", "ticket"))
+    if TK is None:
+        st.caption("Search a Ticket ID to see its information.")
+        return
+    left, right = st.columns(2, gap="small")
+    left.html(_C._kv(_C.ticket_info_rows(CTX, TK["row"])))
+    right.html(_analysis_html(TK))
+
+
+def _main_kpi_panel() -> None:
+    st.html(_title_html("Main Issue KPI", "chart"))
+    if TK is None:
+        st.caption("Search a Ticket ID to see its main issue KPI.")
+        return
+    items = _C.evidence_items(CTX, TK["row"])
+    if not items:
+        st.caption("No KPI above its threshold, and no context indicator detected, in the "
+                   f"correlation window ({WIN_LABEL}).")
+        return
+    item = items[0]
+    where = TK["sector"] if TK["re"] is not None else TK["site"]
+    st.caption(f"{item['tag']} - {item['name']} · {where} · {item['state']} {item['value']}")
+    st.plotly_chart(_C.evidence_figure(item, WIN_LABEL), key="sm_main_kpi",
+                    config={"displayModeBar": False}, width="stretch")
+
+
+# --------------------------------------------------------------------------- #
+# the Daily Target ticket: the same analysed tickets Delay Tickets Analysis
+# shows (`_complaints.load_workspace`, on its Correlation Window). A ticket
+# searched here is found by its Ticket ID or HPSM Incident ID; stage 1 is its
+# general (site-level) analysis, stage 2 the re-analysis at a user location
+# approved here — stored per Ticket ID, so both pages show one result.
+# --------------------------------------------------------------------------- #
+ss = st.session_state
+WIN_LABEL, WIN_H = _C.window_setting()
+CTX, ctx_error = None, ""
+try:
+    CTX = _C.load_workspace(WIN_LABEL, WIN_H)
+except Exception as exc:                   # a Daily Target that cannot be read
+    ctx_error = f"The stored Daily Target could not be read: {exc}"
+
+
+def _ticket_search() -> None:
+    ss["sm_tid"] = (ss.get("sm_tid_in") or "").strip()
+    ss.pop("sm_tid_rev", None)
+
+
+def _loc_approve() -> None:
+    tid, p = ss.get("sm_tid_open"), _parse_loc(ss.get("sm_loc_in", ""))
+    if tid and p:
+        _RL.approve(tid, *p)
+
+
+def _loc_clear() -> None:
+    ss["sm_loc_in"] = ""
+    if ss.get("sm_tid_open"):
+        _RL.clear(ss["sm_tid_open"])
+
+
+TK = None            # the ticket searched: its row, analysis, stage-2 result
+_tid_q = (ss.get("sm_tid") or "").strip()
+if _tid_q and CTX is not None:
+    _T, _Q = CTX.T, _tid_q.upper()
+    _hit = _T[(_T["Ticket ID"].str.upper() == _Q) | (_T["_complaint"].str.upper() == _Q)]
+    if _hit.empty:
+        _hit = _T[_T["Ticket ID"].str.upper().str.contains(_Q, regex=False)
+                  | _T["_complaint"].str.upper().str.contains(_Q, regex=False)]
+    if len(_hit):
+        _sel = _hit.iloc[0]
+        _i = int(_sel["_i"])
+        _re = CTX.re.get(_i)
+        _a = CTX.analysis[_i]
+        _lead = _lead_check(_a)
+        _tracks = _re.tracks if _re is not None else CTX.tracks
+        _col = next((t.column for t in _tracks if _lead is not None
+                     and t.label == _lead.label and t.source == _lead.source), None)
+        _site = _sel["Site ID"] if _sel["Site ID"] != _C.NA else ""
+        TK = {"row": _sel, "i": _i, "re": _re, "analysis": _a, "lead": _lead,
+              "kpi_column": _col, "site": _site,
+              "sector": _sel["Serving Sector"] if _sel["Serving Sector"] != _C.NA else "",
+              "matches": len(_hit)}
+        ss["sm_tid_open"] = _sel["Ticket ID"]
+        _rev = (f"{_sel['Ticket ID']}|{TK['sector']}|"
+                + (f"{_re.lat:.6f},{_re.lon:.6f}" if _re is not None else "general"))
+        TK["rev"] = _rev
+        TK["new"] = ss.get("sm_tid_rev") != _rev
+        if TK["new"]:
+            # a ticket opened (or re-analysed): its serving sector opens, its
+            # main issue KPI colours the map, the map moves to it — once
+            ss["sm_tid_rev"] = _rev
+            if TK["sector"]:
+                ss["sm_sel_sector"] = TK["sector"]
+            if _col:
+                ss["sm_kpi_want"] = _col
+            if _re is not None:
+                ss["sm_loc_in"] = f"{_re.lat:.5f}, {_re.lon:.5f}"
+            elif ss.get("sm_loc_last_tid") != _sel["Ticket ID"]:
+                ss["sm_loc_in"] = ""
+            ss["sm_loc_last_tid"] = _sel["Ticket ID"]
+    else:
+        ss.pop("sm_tid_open", None)
+else:
+    ss.pop("sm_tid_open", None)
+
+if ticket_card is not None:
+    with ticket_card:
+        st.html(_title_html("Ticket ID", "ticket"))
+        if "sm_tid_in" not in ss:
+            ss["sm_tid_in"] = ss.get("sm_tid", "")
+        _a1, _a2 = st.columns([3, 1.1], gap="small", vertical_alignment="center")
+        _a1.text_input("Ticket ID", key="sm_tid_in", on_change=_ticket_search,
+                       label_visibility="collapsed", autocomplete="off",
+                       placeholder="Ticket ID / HPSM Incident ID…")
+        _a2.button("Search", key="sm_tid_go", type="primary", width="stretch",
+                   on_click=_ticket_search)
+        if CTX is None:
+            st.caption(ctx_error or "No Daily Target in Data Resources → Complaint Data.")
+        elif _tid_q and TK is None:
+            st.caption(f"No Daily Target ticket matches “{_tid_q}”.")
+        elif TK is not None and TK["matches"] > 1:
+            st.caption(f"{TK['matches']} tickets match — showing {TK['row']['Ticket ID']}.")
+
+if loc_card is not None:
+    with loc_card:
+        st.html(_title_html("User Location", "pin", subtitle="for re-analysis"))
+        _b1, _b2 = st.columns([3, 1.1], gap="small", vertical_alignment="center")
+        _b1.text_input("User location", key="sm_loc_in", label_visibility="collapsed",
+                       autocomplete="off", disabled=TK is None,
+                       placeholder="Lat, Lon (e.g. 30.5082, 47.7831)")
+        _b2.button("Clear", key="sm_loc_clear", width="stretch", on_click=_loc_clear,
+                   disabled=TK is None,
+                   help="Clear the field; an approved location is removed and the "
+                        "ticket goes back to its general analysis on both pages")
+        _p_in = _parse_loc(ss.get("sm_loc_in", "")) if TK is not None else None
+        _approved = ((round(TK["re"].lat, 5), round(TK["re"].lon, 5))
+                     if TK is not None and TK["re"] is not None else None)
+        _pending = _p_in is not None and (round(_p_in[0], 5), round(_p_in[1], 5)) != _approved
+        st.button("Approve & Re-analyze", key="sm_loc_go", type="primary", width="stretch",
+                  on_click=_loc_approve, disabled=not _pending)
+        if TK is not None and (ss.get("sm_loc_in") or "").strip() and _p_in is None:
+            st.caption("Enter the location as latitude, longitude inside R5.")
+        elif _pending:
+            st.caption("Location entered — the analysis is unchanged until "
+                       "Approve & Re-analyze is pressed.")
+        elif TK is not None:
+            st.caption("Stage 2 · analysed at the approved user location."
+                       if TK["re"] is not None else
+                       "Stage 1 · general analysis — enter the subscriber's location "
+                       "to re-analyse.")
 
 with view_box:
     topo = st.segmented_control("Technology", ["All", "4G", "3G", "2G"],
@@ -666,6 +887,12 @@ with kpi_box:
             if kpi_headers:
                 st.caption(f"No {topo} KPI export among these files.")
         else:
+            _want = st.session_state.pop("sm_kpi_want", None)
+            _got = [o for o, c in choices.items() if _want and c.kpi == _want]
+            if _got:
+                # a ticket opened: its main issue KPI colours the map
+                st.session_state[pick_key] = _got[0]
+                st.session_state["sm_kpi_pick_keep"] = _got[0]
             if st.session_state.get(pick_key, _NO_KPI) not in choices:
                 # its file was removed, or it belongs to another technology
                 st.session_state[pick_key] = _NO_KPI
@@ -706,13 +933,12 @@ with kpi_box:
                  kpi_site_t) = _sector_kpis(
                     picked.file_id, picked.kpi,
                     tuple(_p for _p, _i, _ in _g if picked.kpi in _i.all_kpis))
+    if not fs:
+        legend_slot = st.container()       # the KPI's legend card, under its list
 
-with cov_box:
-    # The measured coverage grids (DL Coverage Insight) of the Current Coverage
-    # Data in Data Resources; Basemap -> Coverage draws them.
-    cov_kept = R.coverage()
-    if not cov_kept:
-        _file_status(None, empty="No coverage grid in Coverage Data")
+# The measured coverage grids (DL Coverage Insight) of the Current Coverage
+# Data in Data Resources; Basemap -> Coverage draws them.
+cov_kept = R.coverage()
 
 # --- resolve frames (KMZ is the sole source) ------------------------------- #
 ks = _load_kmz_path(kmz_path) if kmz_path else None
@@ -741,10 +967,6 @@ SITES = (SECT.groupby("site_id", as_index=False)
               air=("air", lambda s: s.mode().iat[0] if len(s.mode()) else "onair"),
               status=("status", "first")))
 site_ll = SITES.set_index("site_id")[["latitude", "longitude"]]
-
-with st.sidebar:
-    _side_stat([("Sites", f"{SITES['site_id'].nunique():,}"),
-                ("Sectors", f"{len(SECT):,}")])
 
 sel_sector = st.session_state.get("sm_sel_sector")
 
@@ -1025,14 +1247,11 @@ def _layer_controls():
             n_lines)
 
 
-if not fs:
-    map_area, side = st.columns([3.2, 1], gap="small")
-    legend_slot = side.container()
-    with side.container(key="rf_card_layers", border=True):
-        st.html(_title_html("Map layers", "layers"))
+if ctl_slot is not None:
+    with ctl_slot:
         ctl = _layer_controls()
 else:
-    map_area, legend_slot, ctl = st.container(), None, None
+    ctl = None
 
 saved = st.session_state.get("sm_draw") or []
 
@@ -1073,7 +1292,7 @@ with map_area, st.container(key="sm_mapwrap"):
         else:
             with msg_slot:
                 st.info("Coverage view draws the LTE DL Coverage Insight grid — "
-                        "add the export under **LTE coverage** in the sidebar.",
+                        "add it under **Coverage Data** in Data Resources.",
                         icon=":material/signal_cellular_alt:")
 
     # -- technology + topology filter ------------------------------------- #
@@ -1125,6 +1344,18 @@ with map_area, st.container(key="sm_mapwrap"):
                          "  ".join(f"S{n}:{a:.0f}°/{o:.0f}°"
                                    for n, a, o in sorted(set(secs)))})
         nearest_panel = (pd.DataFrame(rows), best)
+
+    # -- the ticket: its site, or its approved user location ------------ #
+    if TK is not None:
+        _re_m = TK["re"]
+        _tk_focus = None
+        if _re_m is not None:
+            _tk_focus = (_re_m.lat, _re_m.lon, 16, f"ticket:{TK['rev']}")
+        elif TK["site"] and TK["site"] in site_ll.index:
+            _tla, _tlo = site_ll.loc[TK["site"]]
+            _tk_focus = (float(_tla), float(_tlo), 16, f"ticket:{TK['rev']}")
+        if _tk_focus is not None and (TK["new"] or focus is None):
+            focus = _tk_focus
 
     draw = SECT_view
 
@@ -1285,6 +1516,21 @@ with map_area, st.container(key="sm_mapwrap"):
                 ).add_to(fg_lines)
             fg_lines.add_to(fmap)
 
+    # -- 2e'. the ticket's approved user location, and its serving site - #
+    if TK is not None and TK["re"] is not None:
+        _re_m = TK["re"]
+        folium.Marker([_re_m.lat, _re_m.lon], icon=_pin_icon("#20BFFF"),
+                      tooltip=f"User location · {TK['row']['Ticket ID']} · "
+                              f"{_re_m.lat:.5f}, {_re_m.lon:.5f}").add_to(fmap)
+        if _re_m.server is not None and _re_m.server.site_id in site_ll.index:
+            _sla, _slo = site_ll.loc[_re_m.server.site_id]
+            folium.PolyLine([[_re_m.lat, _re_m.lon], [float(_sla), float(_slo)]],
+                            color="#22C55E", weight=3,
+                            tooltip=f"Serving sector {_re_m.sector_id} · "
+                                    f"{_re_m.server.distance_m:,.0f} m · "
+                                    f"{_re_m.server.az_diff_deg:.0f}° off boresight"
+                            ).add_to(fmap)
+
     # -- 2f. re-draw shapes the user drew before ---------------- #
     if saved:
         fg_draw = folium.FeatureGroup(name="My drawings", show=True)
@@ -1439,19 +1685,7 @@ with cards_slot:
 
 if legend_slot is not None:
     with legend_slot:
-        if coverage_mode and cov is not None:
-            _g = cov.grid
-            _card("LTE coverage", [
-                *[(_swatch("file", "#20BFFF"), f.name, _cov_region(f))
-                  for f in cov.files],
-                (_swatch("chart", "#20BFFF"), "Grid",
-                 f"{_g.levels[0].cell_m:,.0f} m · {len(_g.levels)} zoom levels"),
-                (_swatch("info", "#94A3B8"), "Time field", cov.time_note)],
-                icon="layers",
-                note="Fair / Poor lines reuse avg_rsrp_dbm (warning / critical) "
-                     "in thresholds_lte.yaml. Click a coverage cell for its "
-                     "values. KPI colouring is off in this view.")
-        elif kpi_col and kpi_legend:
+        if kpi_col and kpi_legend and not coverage_mode:
             _rule = kpi_scheme.rule if kpi_scheme is not None else None
             _n_t = (len(set(kpi_sec_t.columns) | set(kpi_site_t.columns))
                     if kpi_sec_t is not None else 0)
@@ -1470,40 +1704,15 @@ if legend_slot is not None:
                   icon="chart",
                   note="The legend on the map counts the sectors at the time on "
                        "its time bar; click a sector for its details.")
-        else:
-            _air_n = lbl["air"].value_counts()
-            _card("Site status",
-                  [(_swatch("tower", _AIR_LINE[k]), _AIR_LABEL[k],
-                    f"{int(_air_n.get(k, 0)):,} sites")
-                   for k in ("onair", "planned", "offair")],
-                  icon="tower",
-                  note="Pick a KPI under KPI analysis to colour the sectors "
-                       "by it.")
 
-_p1, _p2 = st.columns(2, gap="small")
-with _p1:
-    _card("Map symbols", [
-        (_swatch("tower", "#20BFFF"), "Tower · zoom in, click for its card",
-         f"{len(lbl):,}"),
-        (_swatch("beam", "#1597FF"), "Sector beam · click for Sector Details",
-         f"{len(bf):,}"),
-        (_swatch("beam", "#F8FAFC"), "Selected sector", sel_sector or "–"),
-        (_swatch("dash", "#22C55E"), "Best-pointed server line",
-         "on" if show_lines else "off"),
-        (_swatch("ruler", _MEAS), "Ruler · circle · pin", f"{len(saved)} drawn"),
-    ], icon="layers")
-with _p2:
-    if kpi_col and kpi_legend:
-        _judged = _threshold_rule(kpi_col) is not None
-        _top = _worst_sectors(draw, kpi_band, kpi_val, kpi_col)
-        _card("Worst sectors" if _judged else "Highest sectors",
-              [(_swatch("dot", _band_colour.get(r.band, _KPI_BAND["none"])),
-                r.sector_id, _fmt_value(r.value)) for r in _top.itertuples()],
-              icon="alert" if _judged else "chart", note=kpi_name)
-    else:
-        _card("Worst sectors", [], icon="alert",
-              note="Pick a KPI under KPI analysis in the sidebar to rank the "
-                   "sectors.")
+# 4 Worst Areas · 5 Ticket Information · 6 Main Issue KPI
+_p1, _p2, _p3 = st.columns([1.05, 1.15, 1.05], gap="small")
+with _p1, st.container(key="rf_card_sm_areas", border=True):
+    _worst_areas_panel()
+with _p2, st.container(key="rf_card_sm_tinfo", border=True):
+    _ticket_info_panel()
+with _p3, st.container(key="rf_card_sm_kpi", border=True):
+    _main_kpi_panel()
 # read-out for whatever is drawn
 if saved:
     lines = []

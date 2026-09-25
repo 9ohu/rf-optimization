@@ -9,6 +9,7 @@ streamlit>=1.36
 plotly>=5.22                # dashboard charts
 folium>=0.17               # Site Map (Leaflet) + draw / measure tools
 streamlit-folium>=0.20
+truststore>=0.9          # map tile relay: trust the Windows certificate store (VPN)
 python-pptx>=1.0         # KPI Report Export: editable .pptx with native charts
 kaleido>=1.0            # Bulk Draw report: the drawn charts as pictures
                         # (without it the deck draws the same lines itself)
