@@ -7,7 +7,9 @@ with a position and no inactive status, is on air — whatever the KMZ still
 says. So wherever the app asks whether a site is on air, a site the EP
 lists as active is On Air; for every other site the KMZ's own status stands.
 
-Sites are matched on their Site ID.
+Only the EP's Region 5 rows are read for this — chosen by the EP's own Region
+field, never by Site ID prefix — so a site outside Region 5 keeps its KMZ
+status. Sites are matched on their Site ID.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 import pandas as pd
 
 ON_AIR_STATUS, ON_AIR_STYLE = "On Air", "onair"
+REGION_5 = "Region 5"                  # the EP's Region value for R5
 
 # an EP status that says the cell is not carrying traffic; anything else on an
 # active sheet (Activated, On Air, blank) is an active cell
@@ -22,12 +25,23 @@ _INACTIVE = ("deact", "inact", "not ", "off", "plan", "lock", "dismantl", "remov
              "block", "down")
 
 
-def ep_on_air_sites(ep: pd.DataFrame | None) -> frozenset:
+def _norm_region(s: pd.Series) -> pd.Series:
+    return s.fillna("").astype(str).str.split().str.join(" ").str.lower()
+
+
+def ep_on_air_sites(ep: pd.DataFrame | None, region: str | None = REGION_5) -> frozenset:
     """The Site IDs the EP tracker lists as active: at least one cell on an
-    active (not "Deactive") sheet, with a valid position and no inactive status."""
+    active (not "Deactive") sheet, with a valid position and no inactive status.
+
+    Only the rows whose Region is `region` ("Region 5"; spacing and case
+    aside) are read; an EP without a Region field gives no site."""
     if ep is None or len(ep) == 0 or "site_id" not in ep.columns:
         return frozenset()
     d = ep
+    if region is not None:
+        if "region" not in d.columns:
+            return frozenset()
+        d = d[_norm_region(d["region"]).eq(" ".join(region.split()).lower())]
     if "_sheet" in d.columns:
         d = d[~d["_sheet"].astype(str).str.lower().str.contains("deactive")]
     sid = d["site_id"].fillna("").astype(str).str.strip().str.upper()
@@ -58,4 +72,4 @@ def apply_ep_status(frame: pd.DataFrame | None, on_air, *, status_col: str = "st
     return out
 
 
-__all__ = ["ON_AIR_STATUS", "ON_AIR_STYLE", "apply_ep_status", "ep_on_air_sites"]
+__all__ = ["ON_AIR_STATUS", "ON_AIR_STYLE", "REGION_5", "apply_ep_status", "ep_on_air_sites"]

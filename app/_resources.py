@@ -101,11 +101,20 @@ def ep_on_air() -> frozenset:
 
 @st.cache_resource(show_spinner=False, max_entries=2)
 def _ep_on_air(path: str, sha1: str) -> frozenset:
+    """Every EP row, all regions and technologies, deactive sheets too — no
+    Site ID prefix filter — then the Region 5 rows' active sites."""
+    from rfopt.ingest.cellparams import load_cell_params
     from rfopt.ingest.site_status import ep_on_air_sites
-    try:
-        return ep_on_air_sites(_shared.load_ep_all(path))
-    except Exception:
+    frames = []
+    for tech in ("LTE", "UMTS", "GSM"):
+        try:
+            frames.append(load_cell_params(path, technology=tech, region=None,
+                                           include_deactive=True).df)
+        except Exception:
+            continue                # that technology's sheet isn't in this book
+    if not frames:
         return frozenset()          # an unreadable EP changes nothing
+    return ep_on_air_sites(pd.concat(frames, ignore_index=True))
 
 
 def target():

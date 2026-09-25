@@ -19,6 +19,7 @@ def _ep():
         "longitude": [47.8, 47.8, 46.2, None, 47.1, 47.6],
         "status": ["Activated", "", "Deactivated", "Activated", "Activated", "On Air"],
         "_sheet": ["LTE", "UMTS", "LTE", "LTE", "LTE Deactive", "GSM"],
+        "region": ["Region 5"] * 6,
     })
 
 
@@ -29,6 +30,24 @@ def test_the_ep_lists_a_site_on_air_from_its_active_cells_only():
     assert not {"NAS0100", "EMA0200", "SAM0300"} & on
     assert ep_on_air_sites(None) == frozenset()
     assert ep_on_air_sites(pd.DataFrame()) == frozenset()
+
+
+def test_only_the_eps_region_5_rows_are_read_never_the_site_id_prefix():
+    ep = pd.DataFrame({
+        "site_id": ["XYZ0001", "BAS0777", "NAS0888", "SAM0999"],
+        "latitude": [30.5, 30.6, 30.7, 30.8], "longitude": [47.8, 47.7, 47.6, 47.5],
+        "status": ["Activated"] * 4, "_sheet": ["LTE"] * 4,
+        # the Region value as the EP writes it, give or take spacing and case
+        "region": ["Region 5", "Region 4", " region  5 ", "Region 50"],
+    })
+    # a Region 5 site counts whatever its prefix; a BAS site in another region does not
+    assert ep_on_air_sites(ep) == {"XYZ0001", "NAS0888"}
+    # an EP without a Region field says nothing about any site
+    assert ep_on_air_sites(ep.drop(columns="region")) == frozenset()
+    # outside Region 5 the KMZ status stands
+    kmz = pd.DataFrame({"site_id": ["BAS0777", "XYZ0001"], "status": ["Planned", "Planned"]})
+    out = apply_ep_status(kmz, ep_on_air_sites(ep)).set_index("site_id")["status"]
+    assert out.to_dict() == {"BAS0777": "Planned", "XYZ0001": "On Air"}
 
 
 def test_an_ep_active_site_is_on_air_whatever_the_kmz_says():
