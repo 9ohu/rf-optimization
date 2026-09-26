@@ -11,7 +11,7 @@ APP = ROOT / "app"
 AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
 _REAL_KMZ = Path.home() / "Downloads" / "R5_Sites.kmz"
 
-VIEWS = ["views/overview.py", "views/dashboard.py", "views/site_map.py",
+VIEWS = ["views/overview.py", "views/site_map.py",
          "views/kpi_analysis.py", "views/data_resources.py"]
 
 
@@ -26,49 +26,6 @@ def test_view_renders_empty(page):
     at = AppTest.from_file(str(APP / page), default_timeout=60)
     at.run()
     assert not at.exception, f"{page}: {at.exception}"
-
-
-def test_dashboard_with_a_result(analysis, sample_data):
-    """Dashboard renders its tabs when a worklist result is in session."""
-    import pandas as pd
-
-    from rfopt.complaints.worklist import load_worklist, process_worklist
-    from rfopt.ingest.cellparams import load_cell_params
-
-    # build a tiny synthetic params + worklist so the page has data
-    wl_path = ROOT / "sample_data" / "_wl.csv"
-    pd.DataFrame([{"Ticket ID": "T1", "Site ID(SD Check_site_id)": "R5-001",
-                   "City": "x", "Affected Services": "Data Service",
-                   "Problem Time": "2026-09-07T19:00:00.000Z"}]).to_csv(
-        wl_path, index=False)
-    params = pd.DataFrame([{
-        "site_id": "R5-001", "enodeb_name": "n", "cell_id": "c", "cell_name": "c",
-        "sector": "R5-001-S1", "sector_num": s, "sector_id": f"R5-001-S{s}",
-        "technology": "LTE", "band": "3", "band_label": "L1800", "earfcn": 1750,
-        "bandwidth_mhz": 20, "latitude": 30.5, "longitude": 47.8,
-        "azimuth_deg": az, "antenna_height_m": 25, "mech_tilt_deg": 0.0,
-        "elec_tilt_deg": 4.0, "elec_tilt_branches": "[40]", "max_ret_deg": 10.0,
-        "total_tilt_deg": 4.0, "rs_power_dbm": 18.2, "pci": 10 + s, "mod3": s % 3,
-        "rsi": 0, "antenna_model": "x", "is_outdoor": "Macro", "city": "x",
-        "district": "d", "sub_district": "s", "tac": "1", "cgi": "c",
-        "status": "Active", "region": "Region 5", "prefix": "R5-",
-        "vbw_deg": 6.5, "hbw_deg": 65.0}
-        for s, az in [(1, 0), (2, 120), (3, 240)]])
-    df = process_worklist(load_worklist(wl_path), params)
-    wl_path.unlink(missing_ok=True)
-
-    at = AppTest.from_file(str(APP / "views/dashboard.py"), default_timeout=90)
-    at.session_state["wl_df"] = df
-    at.session_state["wl_audits"] = df.attrs["audits"]
-
-    class _PL:
-        notes = ["test"]
-    _PL.df = params
-    at.session_state["wl_params"] = _PL()
-    at.session_state["wl_kpi"] = None
-    at.session_state["wl_name"] = "Target_test.xlsx"
-    at.run()
-    assert not at.exception
 
 
 def test_an_upload_reaches_the_cached_loader(tmp_path):

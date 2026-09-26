@@ -1,4 +1,26 @@
-# Project status / handoff  (updated 2026-09-25)
+# Project status / handoff  (updated 2026-09-26)
+
+## 2026-09-26 - Main system background, glass sidebar, Daily Worklist removed
+
+Visual only; the Dashboard and every page keep their layout and logic.
+
+- **Background**: after the startup's Ready, the Iraq night network map
+  (`app/static/main/rf_main_bg.png`, the provided 1672x940 picture, never
+  resampled) sits behind the main area of every page (`stMain`: the page
+  scrolls over it), under a dark veil. Cards, KPI tiles and the header bar
+  are dark glass (62 % opaque, light blur) so the map shows through and the
+  content still reads. The startup screen is untouched.
+- **Sidebar**: dark navy glass, a thin lit cyan edge, restyled navigation
+  (same items and routes). Brand: the Huawei flower, HUAWEI, (c) Shamsaldin Ali
+  (`_ui.LOGO_SVG`). The telecom tower (`rf_sidebar_tower.png`, a crop of the
+  provided picture) is the sidebar's own `::before` layer at its foot, so it
+  collapses and returns with the sidebar.
+- **Removed**: the Daily Worklist page (`app/views/dashboard.py`), its nav
+  entry, its app-only helpers (`_shared.load_params`, `load_history`,
+  `PRIO_HEX`) and its tests; the Deploy button and the three-dot menu
+  (`client.toolbarMode = "minimal"` + CSS). The worklist engine in
+  `rfopt/complaints/worklist.py` stays: Complaints and Data Resources use it.
+- Tests: `tests/test_main_theme.py`.
 
 ## 2026-09-25 (cont.) - Sleep Analysis: the modifications the R5 team asked for
 

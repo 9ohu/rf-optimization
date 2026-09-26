@@ -28,7 +28,8 @@ CHART = ["#20BFFF", "#A78BFA", "#FB923C", "#22C55E", "#F472B6", "#FACC15", "#2DD
 ANALYSIS_COLS = ["Ticket ID", "MSISDN", "Site ID", "Site Name", "Site Tickets", "City",
                  "Sup District", "Governorate", "Engineer", "Problem Time", "Ticket Type",
                  "Delay", "KPI Issues", "KPI (window)", "RSRP", "Network Analysis", "Problem",
-                 "Site Issue", "Resolution", "Confidence"]
+                 "Site Issue", "Resolution", "Confidence", "Serving Sector", "Distance",
+                 "User Location", "Description"]
 DEFAULT_COLS = ["Ticket ID", "MSISDN", "Site ID", "Site Name", "City", "Sup District",
                 "Governorate", "Engineer", "Problem Time", "Ticket Type", "Delay", "SLA Status",
                 "KPI Issues", "Network Analysis", "Resolution"]

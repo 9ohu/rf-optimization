@@ -91,6 +91,32 @@ def kmz_file() -> S.StoredFile | None:
     return _one("kmz")
 
 
+def ep_on_air() -> frozenset:
+    """The Site IDs the active EP tracker lists as on air. Wherever the app
+    asks whether a site is on air, these are On Air whatever the KMZ says
+    (`rfopt.ingest.site_status`)."""
+    f = ep_file()
+    return _ep_on_air(str(f.path), f.sha1) if f else frozenset()
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def _ep_on_air(path: str, sha1: str) -> frozenset:
+    """Every EP row, all regions and technologies, deactive sheets too — no
+    Site ID prefix filter — then the Region 5 rows' active sites."""
+    from rfopt.ingest.cellparams import load_cell_params
+    from rfopt.ingest.site_status import ep_on_air_sites
+    frames = []
+    for tech in ("LTE", "UMTS", "GSM"):
+        try:
+            frames.append(load_cell_params(path, technology=tech, region=None,
+                                           include_deactive=True).df)
+        except Exception:
+            continue                # that technology's sheet isn't in this book
+    if not frames:
+        return frozenset()          # an unreadable EP changes nothing
+    return ep_on_air_sites(pd.concat(frames, ignore_index=True))
+
+
 def target():
     """The active Daily Target (a TargetDataset), or None."""
     return load_active()
@@ -108,7 +134,7 @@ def kpi_info(path: str):
     return sniff_kpi_export(path)
 
 
-@st.cache_resource(show_spinner="Reading the objects in the KPI file…", max_entries=16)
+@st.cache_resource(show_spinner=False, max_entries=16)
 def kpi_index(path: str) -> pd.DataFrame:
     """Objects and hours only — no KPI column, so it is quick even on 140 MB."""
     from rfopt.ingest.hourly_kpi import load_hourly_raw
@@ -137,7 +163,7 @@ def kpi_groups() -> list:
     return [(kind, sorted(group, key=recency)) for kind, group in order.items()]
 
 
-@st.cache_resource(show_spinner="Reading the coverage grid…", max_entries=16)
+@st.cache_resource(show_spinner=False, max_entries=16)
 def _coverage_file(sha1: str, path: str, name: str):
     from rfopt.ingest.coverage_grid import CoverageFile, read_coverage_export
     side = Path(path).parent / ".coverage.npz"
@@ -163,7 +189,7 @@ def _coverage_file(sha1: str, path: str, name: str):
     return cf
 
 
-@st.cache_resource(show_spinner="Reading the ticket history…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _history(path: str):
     from rfopt.complaints.history import read_history
     return read_history(path)

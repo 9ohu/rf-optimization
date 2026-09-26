@@ -74,6 +74,15 @@ COLUMNS = [
 
 CSS = """
 <style>
+/* Sleep Analysis reads over the Iraq map: its cards and panels are a denser
+   glass than elsewhere, so the map stays behind them without crossing the text */
+[class*="st-key-sl_card"], .rf-kpi, .rf-card, [class*="st-key-rf_card"] {
+    background: rgba(6, 16, 31, .90) !important;
+    border-color: rgba(64, 160, 255, .24) !important;
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    border-radius: 12px;
+}
+[data-testid="stMain"] { text-shadow: 0 1px 2px rgba(2, 6, 14, .95), 0 0 7px rgba(2, 6, 14, .9); }
 .sl-bars { display: flex; flex-direction: column; gap: 6px; }
 .sl-bar { display: grid; grid-template-columns: 1fr 60px; align-items: center; gap: 10px;
     font-size: 11.5px; color: #CBD5E1; }
@@ -185,7 +194,7 @@ def problem_times(path: str, _sha: str) -> pd.Series:
     return out.drop_duplicates("id").set_index("id")["t"]
 
 
-@st.cache_resource(show_spinner="Reading the KPI of every sector…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def sector_facts(key: tuple) -> dict:
     """Every serving sector the 4G export measures: its hours, and the cells
     behind it. The EP tracker says which cells a sector holds, exactly as Bulk
@@ -245,10 +254,11 @@ def flow_facts(key: tuple) -> dict:
     return A.site_flow_control(data, column, data["site_id"].astype(str))
 
 
-@st.cache_resource(show_spinner="Checking the sleep tickets…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
              _grids: list, _kmz: pd.DataFrame | None, _times: pd.Series,
-             _sites: pd.DataFrame | None = None) -> pd.DataFrame:
+             _sites: pd.DataFrame | None = None,
+             _on_air: frozenset = frozenset()) -> pd.DataFrame:
     """Every sleep ticket with its verdict, the RSRP measured where the
     subscriber was, the status of its planned site and the comment that says
     what the check read."""
@@ -275,7 +285,7 @@ def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
         plan = ""
         if r.plan_site:
             if r.plan_site not in plan_cache:
-                plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz)
+                plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz, _on_air)
             plan = plan_cache[r.plan_site]
         v, text = A.judge(r.check, r.serving, one, point, plan, r.plan_site,
                           _flow.get(site) if site else None, metres=r.metres)
@@ -314,7 +324,9 @@ def page_data():
     sites = site_points(W.ep_path() or "", kmz_file.sha1 if kmz_file else "", kmz)
     key = (hist_file.sha1, kpi_key, W.ep_key(), tuple(sorted(kept)),
            kmz_file.sha1 if kmz_file else "", len(times), len(sites))
-    df = analysed(key, history, facts, flow, grids, kmz, times, sites)
+    # the EP tracker's active sites: On Air whatever the KMZ says (the key
+    # already carries the EP file, so a new EP re-runs the checks)
+    df = analysed(key, history, facts, flow, grids, kmz, times, sites, R.ep_on_air())
     missing = []
     if not four:
         missing.append("4G KPI Data")
@@ -805,7 +817,6 @@ section[data-testid="stMain"] { overflow: hidden !important; }
 # map uses, kept apart from each other and from the map's controls
 MAP_FRAME_CSS = """
 html, body { margin: 0; }
-#map_div, #map_div2, .folium-map { height: 100vh !important; }
 .sm-legend { max-height: calc(100vh - 150px); overflow-y: auto; min-width: 0 !important;
     max-width: calc(100vw - 24px); box-sizing: border-box; font-size: 11px !important;
     padding: 7px 9px 6px !important; }
@@ -819,6 +830,7 @@ html, body { margin: 0; }
 .leaflet-control-attribution { max-width: 45vw; font-size: 10px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
 .leaflet-control-attribution:hover { white-space: normal; }
+.leaflet-marker-icon.sm-lbl { pointer-events: none !important; }
 """
 
 
@@ -839,6 +851,35 @@ def _popup_fold():
             {% endmacro %}
         """)
     return PopupFold()
+
+
+def site_names() -> dict:
+    """site -> its name on the map, from the site KMZ — the Site Map's own
+    source. A site the KMZ does not name keeps its ID, as on the Site Map."""
+    kmz_file = R.kmz_file()
+    if kmz_file is None:
+        return {}
+    kmz = _kmz_sites(str(kmz_file.path), kmz_file.sha1)
+    if kmz is None or kmz.empty or "site_name" not in kmz.columns:
+        return {}
+    name = kmz["site_name"].fillna("").astype(str).str.strip()
+    return dict(zip(kmz["site_id"].astype(str).str.upper(), name))
+
+
+def _site_labels(spots: list):
+    """The Site Map's site-name labels, for [(site, lat, lon)]: the name, or
+    the ID where the KMZ has none; sites on one spot stacked one under the other."""
+    from _map_ui import SiteLabels
+
+    names, seen, pts = site_names(), {}, []
+    for site, lat, lon in spots:
+        at = f"{lat:.6f},{lon:.6f}"
+        pts.append([round(lat, 6), round(lon, 6), names.get(str(site).upper()) or str(site),
+                    seen.get(at, 0)])
+        seen[at] = seen.get(at, 0) + 1
+    # the satellite imagery is under both basemaps: the Site Map's dark-on-light
+    # label colours for it
+    return SiteLabels(pts, fg="#111", halo="#fff", min_zoom=13)
 
 
 def _fs_button(fs: bool) -> None:
@@ -880,7 +921,12 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
     from _kpi_map import LEGEND_CSS
     from _map_ui import MAP_CSS
     fmap.get_root().header.add_child(
-        folium.Element(f"<style>{MAP_CSS}{LEGEND_CSS}{MAP_FRAME_CSS}</style>"))
+        folium.Element(f"<style>{MAP_CSS}{LEGEND_CSS}{MAP_FRAME_CSS}"
+                       # the map fills its frame (full screen stretches it), but
+                       # never below its own height: the frame starts at 0 px and
+                       # the first fit-to-bounds would zoom all the way in
+                       f"#map_div, #map_div2, .folium-map {{ height: max(100vh, {height}px)"
+                       " !important; }</style>"))
     # while a coverage read-out is open the legend folds to its title, so the
     # two never sit on top of each other
     fmap.add_child(_popup_fold())
@@ -894,16 +940,22 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
                     "measured grid to draw.</div>")
 
     # the sites around this one, so the serving sector is seen in its place
-    for n in neighbours(row["site"]).itertuples(index=False):
+    # over the coverage grid the outlines are drawn stronger, so the sites and
+    # the serving sector still stand out from the grid's colours
+    on_grid = basemap == COVERAGE
+    near = neighbours(row["site"])
+    for n in near.itertuples(index=False):
         folium.Polygon(_wedge(float(n.latitude), float(n.longitude),
                               float(n.azimuth_deg) if pd.notna(n.azimuth_deg) else 0.0,
                               metres=200.0),
-                       color="#64748B", weight=1, fill=True, fill_color="#64748B",
-                       fill_opacity=0.12,
+                       color="#E2E8F0" if on_grid else "#64748B", weight=1.5 if on_grid else 1,
+                       fill=True, fill_color="#64748B", fill_opacity=0.12,
                        tooltip=f"{n.site_id}-{n.sector_num:g} · neighbour").add_to(fmap)
-        folium.CircleMarker([float(n.latitude), float(n.longitude)], radius=3,
-                            color="#94A3B8", weight=1, fill=True, fill_color="#64748B",
-                            fill_opacity=0.9, tooltip=str(n.site_id)).add_to(fmap)
+        folium.CircleMarker([float(n.latitude), float(n.longitude)], radius=4 if on_grid else 3,
+                            color="#F8FAFC" if on_grid else "#94A3B8",
+                            weight=2 if on_grid else 1, fill=True, fill_color="#64748B",
+                            fill_opacity=0.9 if not on_grid else 1,
+                            tooltip=str(n.site_id)).add_to(fmap)
 
     az = float("nan")
     for sec in sectors.itertuples(index=False):
@@ -913,8 +965,10 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
             az = float(sec.azimuth_deg) if pd.notna(sec.azimuth_deg) else float("nan")
         folium.Polygon(_wedge(float(sec.latitude), float(sec.longitude),
                               float(sec.azimuth_deg) if pd.notna(sec.azimuth_deg) else 0.0),
-                       color=colour, weight=2 if serving else 1, fill=True, fill_color=colour,
-                       fill_opacity=0.45 if serving else 0.16,
+                       color="#F8FAFC" if serving and on_grid else colour,
+                       weight=(3 if on_grid else 2) if serving else 1, fill=True,
+                       fill_color=colour, fill_opacity=(0.6 if on_grid else 0.45) if serving
+                       else 0.16,
                        tooltip=f"{row['site']}-{sec.sector_num:g}"
                                f"{' · serving' if serving else ''}").add_to(fmap)
     if site_at is not None:
@@ -931,6 +985,14 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
         if site_at is not None:
             folium.PolyLine([list(site_at), list(here)], color="#F8FAFC", weight=1,
                             opacity=0.6, dash_array="4,4").add_to(fmap)
+    # every site drawn carries its name, as on the Site Map
+    spots = [] if site_at is None else [(row["site"], site_at[0], site_at[1])]
+    if len(near):
+        first = near.groupby("site_id", sort=False)[["latitude", "longitude"]].first()
+        spots += [(sid, float(r.latitude), float(r.longitude))
+                  for sid, r in first.iterrows()]
+    if spots:
+        fmap.add_child(_site_labels(spots))
     seen = [list(p) for p in (here, site_at) if p is not None]
     if len(seen) > 1:
         fmap.fit_bounds(seen, padding=(40, 40))

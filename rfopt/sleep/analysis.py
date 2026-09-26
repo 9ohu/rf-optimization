@@ -484,10 +484,13 @@ def point_of(row) -> Point | None:
                  metres=float(row["metres"]), source=str(row.get("source", "")))
 
 
-def plan_site_status(site: str, kmz_sites: pd.DataFrame | None) -> str:
-    """On Air / Still Not On Air for a planned site, from the site KMZ alone.
-    A site the KMZ does not carry has no status here — "" — and none is made
-    up for it."""
+def plan_site_status(site: str, kmz_sites: pd.DataFrame | None, on_air=frozenset()) -> str:
+    """On Air / Still Not On Air for a planned site. The EP tracker first: a
+    site it lists as active (`on_air`, `rfopt.ingest.site_status`) is On Air
+    whatever the KMZ says, since the KMZ may not be updated yet. Otherwise the
+    site KMZ; with neither saying anything the status is "" — none is made up."""
+    if site and str(site).strip().upper() in on_air:
+        return ON_AIR
     if not site or kmz_sites is None or kmz_sites.empty:
         return ""
     row = kmz_sites[kmz_sites["site_id"].astype(str).str.upper().eq(str(site).upper())]
@@ -526,35 +529,56 @@ def _flow_parts(flow) -> tuple:
     return hours, worst, avg
 
 
+# what each check is about, as its Description names it
+_ISSUE = {"utilization": "high PRB utilization", "flow_control": "Flow Control issues",
+          "interference": "interference", "coverage": "weak coverage"}
+_NOT_VERIFIED = {"utilization": "The PRB utilization", "flow_control": "Flow Control",
+                 "interference": "The interference", "coverage": "The coverage"}
+
+
 def describe(check: str, serving: str, ev: Evidence | None, point: Point | None,
              plan: str = "", plan_site: str = "", flow: tuple | None = None,
-             metres=None) -> str:
-    """The Description of a ticket, in the R5 team's fixed wording for its check.
-    Only the values change; a value the data does not carry reads N/A."""
+             metres=None, verdict: str = NOT_SOLVE) -> str:
+    """The Description of a ticket, written for its final verdict.
+
+    Not Solve: the R5 team's fixed wording for the check ("still experiencing
+    ..."), only the values filled in. Solve: the same sentence with the issue
+    "no longer" seen. Not Checked: the check could not be verified. A value
+    the data does not carry reads N/A.
+    """
     lead = (f"The serving sector is {serving or _NA}, with a distance of {_dist(metres)} "
             "from the user location.")
     rsrp = _rsrp(point)
     if check == "planned":
-        state = "is now on air" if plan == ON_AIR else "is still not on air"
-        return (f"The planned site {plan_site or _NA} {state}. {lead} "
-                f"The current RSRP measurement is {rsrp}.")
+        if plan in (ON_AIR, NOT_ON_AIR):
+            state = "is now on air" if plan == ON_AIR else "is still not on air"
+            return (f"The planned site {plan_site or _NA} {state}. {lead} "
+                    f"The current RSRP measurement is {rsrp}.")
+        return (f"The status of the planned site {plan_site or _NA} could not be verified. "
+                f"{lead} The current RSRP measurement is {rsrp}.")
+    if check not in _ISSUE:
+        check = "coverage"
+    if verdict == NOT_CHECKED:
+        tail = "" if check == "coverage" else f" The RSRP measurement is {rsrp}."
+        return f"{lead} {_NOT_VERIFIED[check]} could not be verified from the loaded data.{tail}"
+    how = "is no longer" if verdict == SOLVE else "is still"
+    if check == "coverage":
+        return (f"{lead} The area {how} experiencing weak coverage, with an RSRP measurement "
+                f"of {rsrp}.")
     if check == "utilization":
         mx = _num(ev.prb_max if ev is not None else None, ".1f", "%")
         av = _num(ev.prb_avg if ev is not None else None, ".1f", "%")
-        return (f"{lead} The sector is still experiencing high PRB utilization, with a maximum "
-                f"value of {mx} and an average value of {av}. The RSRP measurement is {rsrp}.")
-    if check == "flow_control":
+        values = f"with a maximum value of {mx} and an average value of {av}"
+    elif check == "flow_control":
         _, worst, avg = _flow_parts(flow)
-        return (f"{lead} The sector is still experiencing Flow Control issues, with a maximum "
-                f"value of {_num(worst, ',.0f')} and an average value of {_num(avg, ',.1f')}. "
-                f"The RSRP measurement is {rsrp}.")
-    if check == "interference":
+        values = (f"with a maximum value of {_num(worst, ',.0f')} and an average value of "
+                  f"{_num(avg, ',.1f')}")
+    else:
         mx = _num(ev.rssi_max if ev is not None else None, ".1f", " dBm")
         av = _num(ev.rssi_avg if ev is not None else None, ".1f", " dBm")
-        return (f"{lead} The sector is still experiencing interference, with a maximum RTWP "
-                f"value of {mx} and an average value of {av}. The RSRP measurement is {rsrp}.")
-    return (f"{lead} The area is still experiencing weak coverage, with an RSRP measurement "
-            f"of {rsrp}.")
+        values = f"with a maximum RTWP value of {mx} and an average value of {av}"
+    return (f"{lead} The sector {how} experiencing {_ISSUE[check]}, {values}. "
+            f"The RSRP measurement is {rsrp}.")
 
 
 def judge(check: str, serving: str, ev: Evidence | None, point: Point | None,
@@ -562,11 +586,13 @@ def judge(check: str, serving: str, ev: Evidence | None, point: Point | None,
           metres=None) -> tuple:
     """(Solve / Not Solve / Not Checked, the Description).
 
-    The verdict is read from the measured numbers against the operator's own
-    lines; the Description is written in the fixed format of `describe`.
+    The verdict comes first, read from the current data against the
+    operator's own lines — never from the closure code alone — and the
+    Description is then written for that verdict (`describe`).
     """
-    text = describe(check, serving, ev, point, plan, plan_site, flow, metres)
-    return _verdict(check, serving, ev, point, plan, flow), text
+    verdict = _verdict(check, serving, ev, point, plan, flow)
+    return verdict, describe(check, serving, ev, point, plan, plan_site, flow, metres,
+                             verdict=verdict)
 
 
 def _verdict(check: str, serving: str, ev: Evidence | None, point: Point | None,
