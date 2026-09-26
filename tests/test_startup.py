@@ -18,19 +18,22 @@ if str(APP) not in sys.path:
 import _startup as S  # noqa: E402
 
 
-def test_the_background_is_the_apps_own_picture_at_its_own_size():
+def test_the_background_is_the_high_resolution_original_as_provided():
     from PIL import Image
     name = S.BG_URL.rsplit("/", 1)[-1]
     path = APP / "static" / "startup" / name
-    assert S.BG_URL.startswith("/app/static/startup/") and path.exists()
-    w, h = Image.open(path).size
-    assert abs(S._ASPECT - w / h) < 1e-6
-    # the storyboard's own labels were painted out of the top corners
-    im = Image.open(path).convert("L")
-    sx, sy = w / 1196, h / 449
-    for box in ((0, 0, 215, 55), (1045, 0, 1172, 55)):
-        crop = im.crop(tuple(round(v * (sx if k % 2 == 0 else sy)) for k, v in enumerate(box)))
-        assert max(crop.getdata()) < 120
+    assert S.BG_URL == "/app/static/startup/rf_startup_bg.png" and path.exists()
+    im = Image.open(path)
+    assert im.format == "PNG" and im.size == (2048, 768)       # never resampled
+    assert abs(S._ASPECT - 2048 / 768) < 1e-6
+    # one background: no older or smaller copy left beside it
+    assert [n for n in S.BG_NAMES if (APP / "static" / "startup" / n).exists()] == [name]
+
+
+def test_the_startup_says_rf_analysis_only():
+    text = S.markup() + S.CSS + S.JS
+    assert "RF Optimization" not in text
+    assert "Initialising RF Analysis" in text and "Launching RF Analysis Platform" in text
 
 
 def test_the_layer_carries_every_element_over_one_background():
@@ -40,7 +43,7 @@ def test_the_layer_carries_every_element_over_one_background():
     assert html.count('class="st"') == len(S.LINKS) and html.count('class="tw"') == 4
     for label, _ in S.STEPS:
         assert label in html
-    assert "Ready" in html and "Launching RF Optimization Platform" in html
+    assert "Ready" in html and "Launching RF Analysis Platform" in html
     # sharp: nothing blurred or rescaled
     assert "blur(" not in S.CSS and "feGaussianBlur" not in html
     assert "scale(" not in S.CSS.split("@keyframes rfsRing")[0]

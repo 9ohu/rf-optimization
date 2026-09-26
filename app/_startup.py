@@ -1,6 +1,6 @@
 """The startup screen: the one loading the system shows, while it really prepares.
 
-One continuous animation over one background — the Huawei RF Optimization
+One continuous animation over one background — the Huawei RF Analysis
 night view of Iraq (`static/startup/rf_startup_bg.*`, served by the app) —
 never a sequence of pictures. The scene itself plays on its own: the view
 lights up, the tower beacons blink, the Iraq map is revealed from Baghdad
@@ -60,18 +60,18 @@ BG_URL, _ASPECT = background()
 _VW, _VH = round(1000 * _ASPECT), 1000     # the network layer's own units
 
 # the background's own coordinates, per cent of its width / height
-TOWER_LIGHTS = [(4.05, 34.0, 0.0), (4.05, 46.0, 0.6), (0.85, 74.5, 1.1), (6.0, 75.0, 1.7)]
+TOWER_LIGHTS = [(7.2, 29.8, 0.0), (7.14, 41.66, 0.6), (4.31, 69.19, 1.1), (9.15, 69.96, 1.7)]
 CITIES = {                              # the lit city nodes under the map pins
-    "baghdad": (72.33, 55.39), "basra": (87.96, 78.2), "mosul": (64.38, 25.38),
-    "erbil": (75.67, 32.49), "anbar": (54.83, 61.22),
+    "baghdad": (73.72, 51.66), "basra": (90.02, 75.56), "mosul": (65.5, 21.76),
+    "erbil": (77.18, 28.65), "anbar": (56.39, 56.23),
 }
-NODES = {"east": (79.82, 54.9), "south": (74.46, 83.65), "west": (40.55, 25.2),
-         "tower": (4.05, 46.0)}
+NODES = {"east": (80.44, 51.05), "south": (75.77, 78.0), "west": (47.2, 22.8),
+         "tower": (7.14, 41.66)}
 # the network links the data streams run along (from, to, bend in % of width)
 LINKS = [("anbar", "baghdad", -3), ("baghdad", "mosul", 3), ("mosul", "erbil", -3),
          ("erbil", "baghdad", 3), ("baghdad", "east", -2), ("east", "basra", 3),
          ("baghdad", "south", -3), ("south", "basra", -3), ("anbar", "mosul", 4),
-         ("west", "mosul", -3), ("tower", "anbar", -16)]
+         ("west", "mosul", -3), ("tower", "anbar", -26)]
 
 STEPS = [("Data Resources", "db"), ("Network Data", "net"),
          ("Map Services", "map"), ("Analysis Engine", "engine")]
@@ -114,11 +114,12 @@ def markup() -> str:
         f'<path class="st" style="animation-delay:{0.35 * k:.2f}s" '
         f'd="{_link_path(pts[a], pts[b], bend)}"/>'
         for k, (a, b, bend) in enumerate(LINKS))
-    sx, sy = _VW / 2392, _VH / 898
+    # the blue light trails of the picture, from the tower towards the map
+    sx, sy = _VW / 2048, _VH / 768
     trails = (f'<path class="tr" transform="scale({sx:.4f} {sy:.4f})" '
-              'd="M0,760 C420,640 760,905 1180,780 S1720,640 2392,720"/>'
+              'd="M0,470 C300,520 520,640 820,640 S1120,560 1320,540"/>'
               f'<path class="tr t2" transform="scale({sx:.4f} {sy:.4f})" '
-              'd="M0,820 C520,700 900,880 1320,820 S1900,760 2392,800"/>')
+              'd="M0,560 C320,600 560,720 880,700 S1180,610 1400,580"/>')
     lights = "".join(f'<i class="tw" style="left:{x}%;top:{y}%;animation-delay:{d}s"></i>'
                      for x, y, d in TOWER_LIGHTS)
     cities = "".join(f'<i class="cn" style="left:{x}%;top:{y}%;--d:{k}"></i>'
@@ -135,7 +136,7 @@ def markup() -> str:
   </svg>
   {lights}{cities}
   <div class="rfs-panel">
-    <div class="rfs-status"><span>Initialising RF Optimization</span></div>
+    <div class="rfs-status"><span>Initialising RF Analysis</span></div>
     <div class="rfs-bar"><div class="rfs-track"><i></i></div><b>0%</b></div>
     <div class="rfs-steps">{steps}</div>
   </div>
@@ -143,7 +144,7 @@ def markup() -> str:
 <div class="rfs-ready">
   <div class="rfs-check">{_svg('<path d="m6 12.5 4 4L18.5 8"/>')}</div>
   <div class="rfs-ready-t">Ready</div>
-  <div class="rfs-ready-s">Launching RF Optimization Platform…</div>
+  <div class="rfs-ready-s">Launching RF Analysis Platform…</div>
 </div>
 <button class="rfs-skip" type="button">Skip</button>"""
 
@@ -172,10 +173,10 @@ CSS = """
 /* the map, dark until it is revealed from Baghdad outward */
 #rf-startup .rfs-veil { position: absolute; left: 46%; top: 0; width: 54%; height: 100%;
   background: rgba(3, 9, 22, .9); --rfs-r: 0%;
-  -webkit-mask-image: radial-gradient(circle at 49% 55%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
+  -webkit-mask-image: radial-gradient(circle at 51% 52%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
                       linear-gradient(to right, transparent, #000 14%);
   -webkit-mask-composite: source-in;
-  mask-image: radial-gradient(circle at 49% 55%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
+  mask-image: radial-gradient(circle at 51% 52%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
               linear-gradient(to right, transparent, #000 14%);
   mask-composite: intersect; transition: --rfs-r 2s cubic-bezier(.45, .05, .3, 1); }
 #rf-startup.s2 .rfs-veil { --rfs-r: 125%; }
@@ -214,12 +215,13 @@ CSS = """
 #rf-startup .tr.t2 { animation-duration: 8s; animation-delay: -3s; opacity: .7; }
 @keyframes rfsTrail { from { stroke-dashoffset: 2720; } to { stroke-dashoffset: 0; } }
 /* the loading panel under the title */
-#rf-startup .rfs-panel { position: absolute; left: 10.4%; top: 66.5%; width: 33%;
+#rf-startup .rfs-panel { position: absolute; left: 12.3%; top: 49.5%; width: 32%;
   opacity: 0; transition: opacity .8s ease; }
 #rf-startup.s1 .rfs-panel { opacity: 1; transition-delay: .5s; }
 #rf-startup.ready .rfs-panel { opacity: 0; transition-delay: 0s; }
 #rf-startup .rfs-status { height: 1.8cqw; font-size: max(13px, 1.2cqw); font-weight: 600;
-  color: #56c8ff; letter-spacing: .005em; white-space: nowrap; }
+  color: #56c8ff; letter-spacing: .005em; white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
 #rf-startup .rfs-status span { display: inline-block; transition: opacity .25s ease; }
 #rf-startup .rfs-status span.out { opacity: 0; }
 #rf-startup .rfs-bar { display: flex; align-items: center; gap: 1cqw; margin-top: .7cqw; }
@@ -231,7 +233,9 @@ CSS = """
 #rf-startup .rfs-bar b { min-width: 3.6cqw; font-size: max(13px, 1.05cqw); font-weight: 600;
   color: #F1F5F9; font-variant-numeric: tabular-nums; }
 #rf-startup .rfs-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6cqw;
-  margin-top: 1.3cqw; margin-right: 4.6cqw; }
+  margin-top: 1.1cqw; margin-right: 4.6cqw; padding: .75cqw .4cqw .65cqw;
+  background: rgba(4, 12, 28, .72); border: 1px solid rgba(80, 150, 230, .25);
+  border-radius: 10px; box-shadow: 0 6px 22px rgba(0, 0, 0, .45); }
 #rf-startup .stp { display: flex; flex-direction: column; align-items: center; gap: .35cqw;
   color: #7390b3; transition: color .5s ease; }
 #rf-startup .stp .ic { width: max(18px, 1.7cqw); height: max(18px, 1.7cqw); }
