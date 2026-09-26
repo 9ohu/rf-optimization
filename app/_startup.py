@@ -62,10 +62,10 @@ _VW, _VH = round(1000 * _ASPECT), 1000     # the network layer's own units
 # the background's own coordinates, per cent of its width / height
 TOWER_LIGHTS = [(7.2, 29.8, 0.0), (7.14, 41.66, 0.6), (4.31, 69.19, 1.1), (9.15, 69.96, 1.7)]
 CITIES = {                              # the lit city nodes under the map pins
-    "baghdad": (73.72, 51.66), "basra": (90.02, 75.56), "mosul": (65.5, 21.76),
-    "erbil": (77.18, 28.65), "anbar": (56.39, 56.23),
+    "baghdad": (72.21, 48.35), "basra": (80.55, 77.55), "mosul": (70.19, 17.46),
+    "erbil": (74.48, 29.42), "anbar": (61.13, 51.6),
 }
-NODES = {"east": (80.44, 51.05), "south": (75.77, 78.0), "west": (47.2, 22.8),
+NODES = {"east": (79.37, 57.33), "south": (72.71, 73.73), "west": (55.27, 29.28),
          "tower": (7.14, 41.66)}
 # the network links the data streams run along (from, to, bend in % of width)
 LINKS = [("anbar", "baghdad", -3), ("baghdad", "mosul", 3), ("mosul", "erbil", -3),
@@ -173,10 +173,10 @@ CSS = """
 /* the map, dark until it is revealed from Baghdad outward */
 #rf-startup .rfs-veil { position: absolute; left: 46%; top: 0; width: 54%; height: 100%;
   background: rgba(3, 9, 22, .9); --rfs-r: 0%;
-  -webkit-mask-image: radial-gradient(circle at 51% 52%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
+  -webkit-mask-image: radial-gradient(circle at 48.5% 48.4%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
                       linear-gradient(to right, transparent, #000 14%);
   -webkit-mask-composite: source-in;
-  mask-image: radial-gradient(circle at 51% 52%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
+  mask-image: radial-gradient(circle at 48.5% 48.4%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
               linear-gradient(to right, transparent, #000 14%);
   mask-composite: intersect; transition: --rfs-r 2s cubic-bezier(.45, .05, .3, 1); }
 #rf-startup.s2 .rfs-veil { --rfs-r: 125%; }
