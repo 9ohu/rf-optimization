@@ -46,14 +46,14 @@ def src_of(upload, path):
 SRC_HASH = {NamedBytes: lambda b: (b.name, b.getbuffer().nbytes)}
 
 
-@st.cache_resource(show_spinner="Loading the parameter tracker\u2026",
+@st.cache_resource(show_spinner=False,
                    hash_funcs=SRC_HASH)
 def load_params(src, tech: str = "LTE"):
     from rfopt.ingest.cellparams import load_cell_params
     return load_cell_params(src, technology=tech, region="R5")
 
 
-@st.cache_resource(show_spinner="Loading hourly KPI\u2026", hash_funcs=SRC_HASH)
+@st.cache_resource(show_spinner=False, hash_funcs=SRC_HASH)
 def load_kpi(src):
     from rfopt.ingest.hourly_kpi import load_hourly_kpi
     return load_hourly_kpi(src)
@@ -77,14 +77,14 @@ def load_kpi_files(paths: tuple):
                                 for n in ld.notes])
 
 
-@st.cache_resource(show_spinner="Loading the 3G hourly export\u2026",
+@st.cache_resource(show_spinner=False,
                    hash_funcs=SRC_HASH)
 def load_kpi_3g(src):
     from rfopt.ingest.hourly_kpi import load_hourly_kpi_3g
     return load_hourly_kpi_3g(src)
 
 
-@st.cache_data(show_spinner="Reading complaint history\u2026",
+@st.cache_data(show_spinner=False,
                hash_funcs=SRC_HASH)
 def load_history(src) -> dict:
     from rfopt.complaints import load_complaints
@@ -156,7 +156,7 @@ def style_severity(df, col: str = "severity"):
         return df
 
 
-@st.cache_resource(show_spinner="Reading the EP tracker…")
+@st.cache_resource(show_spinner=False)
 def load_ep_all(path: str):
     """Every R5 cell in the EP tracker, all technologies, deactive sheets too."""
     import pandas as pd

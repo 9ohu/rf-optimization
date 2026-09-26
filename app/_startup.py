@@ -1,35 +1,63 @@
-"""The startup screen: the RF Optimization platform initialising, once per browser tab.
+"""The startup screen: the one loading the system shows, while it really prepares.
 
 One continuous animation over one background — the Huawei RF Optimization
-night view of Iraq (`static/startup/rf_startup_bg.jpg`, served by the app) —
-never a sequence of pictures:
+night view of Iraq (`static/startup/rf_startup_bg.*`, served by the app) —
+never a sequence of pictures. The scene itself plays on its own: the view
+lights up, the tower beacons blink, the Iraq map is revealed from Baghdad
+outward, the city nodes light up, data runs along the network links. The
+loading panel under the title follows the real preparation (`_warmup`): its
+status is the task running, its bar the share of tasks done, its four steps
+(Data Resources · Network Data · Map Services · Analysis Engine) turn active
+then done as their tasks finish. It says Ready only when the preparation is
+complete, then fades into the app.
 
-  0 – 1.5 s   the view lights up, the tower beacons blink       Initialising
-  1.5 – 3.5 s the map is revealed from Baghdad outward, the     Loading Network Data
-              city nodes light up, data streams start
-  3.5 – 10 s  the loading panel under the title: one progress   Processing Network Data
-              bar, four steps turning active then done          Preparing Map Services
-                                                                Preparing Analysis Engine
-                                                                Almost Ready
-  10 – 11 s   Ready, then the screen fades into the app
-
-Every animated element is placed in the background's own coordinates (per
-cent of the picture), so it stays on its tower light or city at any window
-size. The layer lives outside Streamlit's page (added to the document body by
-`show`), so the app loads underneath it and nothing of the app changes once it
-has gone. Esc or "Skip" ends it at once; a reduced-motion setting shortens it
-and stills the streams.
+Every animated element is placed in the background's own coordinates (per cent
+of the picture), so it stays on its tower light or city at any window size.
+Nothing is scaled or blurred: text is live text, the lights and lines are
+vector, the picture is drawn once at its own resolution. The layer lives
+outside Streamlit's page (added to the document body), so the app loads
+underneath it and nothing of the app changes once it has gone. Esc or "Skip"
+hides it; a reduced-motion setting stills the streams.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 
 import streamlit as st
 
-BG_URL = "/app/static/startup/rf_startup_bg.jpg"
-_ASPECT = 2392 / 898                    # the background's width / height
+STATIC = Path(__file__).resolve().parent / "static" / "startup"
+_URL = "/app/static/startup/"
+
+
+BG_NAMES = ("rf_startup_bg.png", "rf_startup_bg.jpg", "rf_startup_bg.jpeg", "rf_startup_bg.webp")
+
+
+def background() -> tuple[str, float]:
+    """(URL, width / height) of the startup background: the largest of
+    `static/startup/rf_startup_bg.(png|jpg|jpeg|webp)` — put the original
+    high-resolution file there under one of these names to use it."""
+    from PIL import Image
+    best = None
+    for p in (STATIC / n for n in BG_NAMES):
+        if not p.exists():
+            continue
+        try:
+            w, h = Image.open(p).size
+        except Exception:
+            continue
+        if best is None or w * h > best[1] * best[2]:
+            best = (p, w, h)
+    if best is None:
+        return _URL + "rf_startup_bg.png", 2392 / 898
+    p, w, h = best
+    return _URL + p.name, w / h
+
+
+BG_URL, _ASPECT = background()
+_VW, _VH = round(1000 * _ASPECT), 1000     # the network layer's own units
 
 # the background's own coordinates, per cent of its width / height
 TOWER_LIGHTS = [(4.05, 34.0, 0.0), (4.05, 46.0, 0.6), (0.85, 74.5, 1.1), (6.0, 75.0, 1.7)]
@@ -47,15 +75,8 @@ LINKS = [("anbar", "baghdad", -3), ("baghdad", "mosul", 3), ("mosul", "erbil", -
 
 STEPS = [("Data Resources", "db"), ("Network Data", "net"),
          ("Map Services", "map"), ("Analysis Engine", "engine")]
-# (second, per cent, status, step now active — a step before it is done)
-TIMELINE = [(0.0, 0, "Initialising RF Optimization", -1),
-            (2.2, 4, "Loading Network Data", 0),
-            (4.0, 32, "Processing Network Data", 1),
-            (6.0, 60, "Preparing Map Services", 2),
-            (7.3, 78, "Preparing Analysis Engine", 3),
-            (8.5, 92, "Almost Ready", 4),
-            (9.6, 100, "Almost Ready", 4)]
-READY_AT, LEAVE_AT = 10.0, 11.2
+MIN_SHOW = 4.2              # s: the map reveal plays through before Ready
+STALL = 120                 # s without a word from the server: get out of the way
 
 _ICON = {
     "db": '<ellipse cx="12" cy="5.5" rx="7" ry="2.8"/><path d="M5 5.5v6.5c0 1.5 3.1 2.8 7 2.8s7-1.3 '
@@ -74,13 +95,13 @@ def _svg(d: str, cls: str = "") -> str:
 
 
 def _link_path(a, b, bend: float) -> str:
-    """A gentle curve between two points of the picture, in its pixel space."""
+    """A gentle curve between two points of the picture, in the layer's units."""
     (x1, y1), (x2, y2) = a, b
-    X1, Y1, X2, Y2 = x1 * 23.92, y1 * 8.98, x2 * 23.92, y2 * 8.98
+    X1, Y1, X2, Y2 = x1 * _VW / 100, y1 * _VH / 100, x2 * _VW / 100, y2 * _VH / 100
     mx, my = (X1 + X2) / 2, (Y1 + Y2) / 2
     dx, dy = X2 - X1, Y2 - Y1
     n = (dx * dx + dy * dy) ** 0.5 or 1.0
-    k = bend * 23.92
+    k = bend * _VW / 100
     cx, cy = mx - dy / n * k, my + dx / n * k
     return f"M{X1:.0f},{Y1:.0f} Q{cx:.0f},{cy:.0f} {X2:.0f},{Y2:.0f}"
 
@@ -93,8 +114,11 @@ def markup() -> str:
         f'<path class="st" style="animation-delay:{0.35 * k:.2f}s" '
         f'd="{_link_path(pts[a], pts[b], bend)}"/>'
         for k, (a, b, bend) in enumerate(LINKS))
-    trails = ('<path class="tr" d="M0,760 C420,640 760,905 1180,780 S1720,640 2392,720"/>'
-              '<path class="tr t2" d="M0,820 C520,700 900,880 1320,820 S1900,760 2392,800"/>')
+    sx, sy = _VW / 2392, _VH / 898
+    trails = (f'<path class="tr" transform="scale({sx:.4f} {sy:.4f})" '
+              'd="M0,760 C420,640 760,905 1180,780 S1720,640 2392,720"/>'
+              f'<path class="tr t2" transform="scale({sx:.4f} {sy:.4f})" '
+              'd="M0,820 C520,700 900,880 1320,820 S1900,760 2392,800"/>')
     lights = "".join(f'<i class="tw" style="left:{x}%;top:{y}%;animation-delay:{d}s"></i>'
                      for x, y, d in TOWER_LIGHTS)
     cities = "".join(f'<i class="cn" style="left:{x}%;top:{y}%;--d:{k}"></i>'
@@ -103,17 +127,15 @@ def markup() -> str:
     steps = "".join(f'<div class="stp" data-i="{k}">{_svg(_ICON[ic], "ic")}<span>{label}</span>'
                     f'<b class="mk"><em></em>{ok}</b></div>' for k, (label, ic) in enumerate(STEPS))
     return f"""
-<div class="rfs-blur"></div>
 <div class="rfs-stage">
-  <img class="rfs-bg" src="{BG_URL}" alt="" draggable="false">
+  <img class="rfs-bg" src="{BG_URL}" alt="" draggable="false" decoding="sync">
   <div class="rfs-veil"></div>
-  <svg class="rfs-net" viewBox="0 0 2392 898" preserveAspectRatio="none">
-    <defs><filter id="rfsGlow"><feGaussianBlur stdDeviation="5"/></filter></defs>
+  <svg class="rfs-net" viewBox="0 0 {_VW} {_VH}" preserveAspectRatio="none">
     <g class="rfs-trails">{trails}</g><g class="rfs-links">{links}</g>
   </svg>
   {lights}{cities}
   <div class="rfs-panel">
-    <div class="rfs-status"><span></span></div>
+    <div class="rfs-status"><span>Initialising RF Optimization</span></div>
     <div class="rfs-bar"><div class="rfs-track"><i></i></div><b>0%</b></div>
     <div class="rfs-steps">{steps}</div>
   </div>
@@ -128,27 +150,25 @@ def markup() -> str:
 
 CSS = """
 @property --rfs-r { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
-#rf-startup { position: fixed; inset: 0; z-index: 2147483600; background: #030916;
-  overflow: hidden; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-  color: #E2E8F0; opacity: 1; transition: opacity .9s ease; cursor: default; }
+.st-key-rf_startup_bus { display: none !important; }
+#rf-startup { position: fixed; inset: 0; z-index: 2147483600; overflow: hidden; cursor: default;
+  background: radial-gradient(ellipse at 60% 45%, #0a1a33 0, #050e1f 55%, #030916 100%);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #E2E8F0;
+  -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
+  opacity: 1; transition: opacity .9s ease; }
 #rf-startup.leave { opacity: 0; pointer-events: none; }
-#rf-startup .rfs-blur { position: absolute; inset: -40px; background: #030916 center/cover no-repeat;
-  filter: blur(34px) brightness(.3) saturate(1.1); transform: scale(1.1); }
-#rf-startup::after { content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(to bottom, #030916 0, rgba(3, 9, 22, .55) 14%, transparent 24%,
-                              transparent 76%, rgba(3, 9, 22, .55) 86%, #030916 100%); }
-#rf-startup .rfs-stage { position: absolute; left: 50%; top: 50%;
-  width: max(100vw, calc(64vh * ASPECT)); aspect-ratio: ASPECT;
-  transform: translate(-50%, -50%) scale(1.035); container-type: inline-size;
-  animation: rfsDrift 12s ease-out forwards;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 7%, #000 93%, transparent 100%);
-          mask-image: linear-gradient(to bottom, transparent 0, #000 7%, #000 93%, transparent 100%); }
-@keyframes rfsDrift { to { transform: translate(-50%, -50%) scale(1); } }
+/* the picture at its own size, centred without any transform (nothing is
+   resampled twice, and text over it stays on whole pixels) */
+#rf-startup .rfs-stage { position: absolute; inset: 0; margin: auto;
+  width: max(100vw, calc(64vh * ASPECT)); height: calc(max(100vw, calc(64vh * ASPECT)) / ASPECT);
+  container-type: inline-size;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 6%, #000 94%, transparent 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 6%, #000 94%, transparent 100%); }
 #rf-startup .rfs-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
-  user-select: none; filter: brightness(.25) saturate(.8);
-  transition: filter 1.5s ease; }
-#rf-startup.s1 .rfs-bg { filter: brightness(.95) saturate(1); }
-#rf-startup.ready .rfs-bg { filter: brightness(.42) saturate(.85) blur(1.5px); transition-duration: .9s; }
+  user-select: none; image-rendering: auto; opacity: .3; transition: opacity 1.4s ease; }
+#rf-startup.s1 .rfs-bg { opacity: 1; }
+#rf-startup .rfs-dim { position: absolute; inset: 0; background: rgba(3, 9, 22, 0);
+  transition: background .8s ease; pointer-events: none; }
 /* the map, dark until it is revealed from Baghdad outward */
 #rf-startup .rfs-veil { position: absolute; left: 46%; top: 0; width: 54%; height: 100%;
   background: rgba(3, 9, 22, .9); --rfs-r: 0%;
@@ -164,79 +184,83 @@ CSS = """
   border-radius: 50%; background: radial-gradient(circle, #ffd7d0 0, #ff3b30 35%, rgba(255, 40, 30, 0) 70%);
   box-shadow: 0 0 1.6cqw .5cqw rgba(255, 45, 35, .55); animation: rfsBlink 2.4s ease-in-out infinite;
   mix-blend-mode: screen; }
-@keyframes rfsBlink { 0%, 100% { opacity: .25; transform: scale(.8); } 45% { opacity: 1; transform: scale(1.15); } }
+@keyframes rfsBlink { 0%, 100% { opacity: .25; } 45% { opacity: 1; } }
 /* city nodes: lit one after the other as the map is revealed */
 #rf-startup .cn { position: absolute; width: 1.1cqw; height: 1.1cqw; margin: -.55cqw 0 0 -.55cqw;
-  border-radius: 50%; opacity: 0; transform: scale(.3); mix-blend-mode: screen;
+  border-radius: 50%; opacity: 0; mix-blend-mode: screen;
   background: radial-gradient(circle, #fff7e0 0, #ffb347 30%, rgba(255, 150, 40, 0) 70%);
   box-shadow: 0 0 2.2cqw .7cqw rgba(255, 160, 60, .45);
-  transition: opacity .7s ease, transform .7s cubic-bezier(.2, .9, .3, 1.3);
-  transition-delay: calc(.6s + var(--d) * .28s); }
+  transition: opacity .7s ease; transition-delay: calc(.6s + var(--d) * .28s); }
 #rf-startup .cn::after { content: ""; position: absolute; inset: -.9cqw; border-radius: 50%;
   border: .12cqw solid rgba(32, 191, 255, .75); opacity: 0; }
-#rf-startup.s2 .cn { opacity: 1; transform: scale(1); }
+#rf-startup.s2 .cn { opacity: 1; }
 #rf-startup.s3 .cn::after { animation: rfsRing 2.6s ease-out infinite;
   animation-delay: calc(var(--d) * .45s); }
 @keyframes rfsRing { 0% { opacity: .8; transform: scale(.35); } 100% { opacity: 0; transform: scale(1.6); } }
-/* network links and the data moving along them */
+/* network links and the data moving along them: crisp strokes, a light glow */
 #rf-startup .rfs-net { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible;
   mix-blend-mode: screen; }
 #rf-startup .rfs-links { opacity: 0; transition: opacity 1.2s ease .9s; }
 #rf-startup.s2 .rfs-links { opacity: 1; }
-#rf-startup .lk { fill: none; stroke: rgba(56, 170, 255, .22); stroke-width: 2; }
-#rf-startup .st { fill: none; stroke: #7fd8ff; stroke-width: 3.2; stroke-linecap: round;
-  stroke-dasharray: 34 560; filter: url(#rfsGlow) drop-shadow(0 0 4px #20bfff);
-  animation: rfsFlow 2.8s linear infinite; }
-@keyframes rfsFlow { from { stroke-dashoffset: 594; } to { stroke-dashoffset: 0; } }
-#rf-startup .tr { fill: none; stroke: rgba(120, 200, 255, .55); stroke-width: 3; stroke-linecap: round;
-  stroke-dasharray: 120 2600; filter: drop-shadow(0 0 6px #1597ff);
-  animation: rfsTrail 6s linear infinite; }
+#rf-startup .lk { fill: none; stroke: rgba(56, 170, 255, .25); stroke-width: 1.2;
+  vector-effect: non-scaling-stroke; }
+#rf-startup .st { fill: none; stroke: #9be2ff; stroke-width: 2.4; stroke-linecap: round;
+  vector-effect: non-scaling-stroke; stroke-dasharray: 14 240;
+  filter: drop-shadow(0 0 3px #20bfff); animation: rfsFlow 2.8s linear infinite; }
+@keyframes rfsFlow { from { stroke-dashoffset: 254; } to { stroke-dashoffset: 0; } }
+#rf-startup .tr { fill: none; stroke: rgba(150, 215, 255, .6); stroke-width: 2; stroke-linecap: round;
+  vector-effect: non-scaling-stroke; stroke-dasharray: 120 2600;
+  filter: drop-shadow(0 0 4px #1597ff); animation: rfsTrail 6s linear infinite; }
 #rf-startup .tr.t2 { animation-duration: 8s; animation-delay: -3s; opacity: .7; }
 @keyframes rfsTrail { from { stroke-dashoffset: 2720; } to { stroke-dashoffset: 0; } }
 /* the loading panel under the title */
 #rf-startup .rfs-panel { position: absolute; left: 10.4%; top: 66.5%; width: 33%;
-  opacity: 0; transform: translateY(1cqw); transition: opacity .8s ease, transform .8s ease; }
-#rf-startup.s1 .rfs-panel { opacity: 1; transform: none; transition-delay: .5s; }
-#rf-startup.ready .rfs-panel { opacity: 0; transform: translateY(-.6cqw); transition-delay: 0s; }
-#rf-startup .rfs-status { height: 1.8cqw; font-size: 1.28cqw; font-weight: 600; color: #4cc3ff;
-  letter-spacing: .01em; text-shadow: 0 0 1cqw rgba(32, 150, 255, .45); }
-#rf-startup .rfs-status span { display: inline-block; transition: opacity .3s ease, transform .3s ease; }
-#rf-startup .rfs-status span.out { opacity: 0; transform: translateY(-.4cqw); }
+  opacity: 0; transition: opacity .8s ease; }
+#rf-startup.s1 .rfs-panel { opacity: 1; transition-delay: .5s; }
+#rf-startup.ready .rfs-panel { opacity: 0; transition-delay: 0s; }
+#rf-startup .rfs-status { height: 1.8cqw; font-size: max(13px, 1.2cqw); font-weight: 600;
+  color: #56c8ff; letter-spacing: .005em; white-space: nowrap; }
+#rf-startup .rfs-status span { display: inline-block; transition: opacity .25s ease; }
+#rf-startup .rfs-status span.out { opacity: 0; }
 #rf-startup .rfs-bar { display: flex; align-items: center; gap: 1cqw; margin-top: .7cqw; }
-#rf-startup .rfs-track { flex: 1; height: .62cqw; border-radius: 1cqw; background: rgba(20, 45, 80, .75);
-  border: 1px solid rgba(80, 150, 230, .28); overflow: hidden; }
+#rf-startup .rfs-track { flex: 1; height: max(6px, .55cqw); border-radius: 99px;
+  background: rgba(20, 45, 80, .8); border: 1px solid rgba(80, 150, 230, .3); overflow: hidden; }
 #rf-startup .rfs-track i { display: block; height: 100%; width: 0; border-radius: inherit;
   background: linear-gradient(90deg, #1565ff, #20bfff 70%, #8fe4ff);
-  box-shadow: 0 0 1cqw rgba(32, 191, 255, .7); }
-#rf-startup .rfs-bar b { width: 3.6cqw; font-size: 1.1cqw; font-weight: 600; color: #F1F5F9;
-  font-variant-numeric: tabular-nums; }
+  box-shadow: 0 0 10px rgba(32, 191, 255, .6); }
+#rf-startup .rfs-bar b { min-width: 3.6cqw; font-size: max(13px, 1.05cqw); font-weight: 600;
+  color: #F1F5F9; font-variant-numeric: tabular-nums; }
 #rf-startup .rfs-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6cqw;
   margin-top: 1.3cqw; margin-right: 4.6cqw; }
 #rf-startup .stp { display: flex; flex-direction: column; align-items: center; gap: .35cqw;
-  color: #6b86a8; transition: color .5s ease; }
-#rf-startup .stp .ic { width: 1.75cqw; height: 1.75cqw; }
-#rf-startup .stp span { font-size: .78cqw; white-space: nowrap; }
-#rf-startup .stp .mk { position: relative; width: 1.05cqw; height: 1.05cqw; margin-top: .15cqw; }
+  color: #7390b3; transition: color .5s ease; }
+#rf-startup .stp .ic { width: max(18px, 1.7cqw); height: max(18px, 1.7cqw); }
+#rf-startup .stp span { font-size: max(11px, .76cqw); white-space: nowrap; }
+#rf-startup .stp .mk { position: relative; width: max(12px, 1.05cqw); height: max(12px, 1.05cqw);
+  margin-top: .15cqw; }
 #rf-startup .stp .mk em { position: absolute; inset: 0; border-radius: 50%;
-  border: .1cqw solid #3d5878; transition: all .4s ease; }
-#rf-startup .stp .ok { position: absolute; inset: -.1cqw; width: 1.25cqw; height: 1.25cqw;
-  color: #fff; opacity: 0; transform: scale(.4); transition: all .4s cubic-bezier(.2, .9, .3, 1.4); }
-#rf-startup .stp.active { color: #4cc3ff; }
-#rf-startup .stp.active .mk em { border-color: #20bfff; background: radial-gradient(circle, #20bfff 0 38%, transparent 42%);
-  box-shadow: 0 0 .8cqw rgba(32, 191, 255, .8); animation: rfsPulse 1.2s ease-in-out infinite; }
-#rf-startup .stp.done { color: #cfe6ff; }
-#rf-startup .stp.done .mk em { border-color: #1597ff; background: #1597ff; box-shadow: 0 0 .7cqw rgba(21, 151, 255, .7); }
-#rf-startup .stp.done .ok { opacity: 1; transform: scale(1); }
-@keyframes rfsPulse { 50% { box-shadow: 0 0 1.3cqw rgba(32, 191, 255, 1); } }
+  border: 1.5px solid #3d5878; transition: all .4s ease; }
+#rf-startup .stp .ok { position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px);
+  color: #fff; opacity: 0; transition: opacity .35s ease; }
+#rf-startup .stp.active { color: #56c8ff; }
+#rf-startup .stp.active .mk em { border-color: #20bfff;
+  background: radial-gradient(circle, #20bfff 0 38%, transparent 42%);
+  box-shadow: 0 0 8px rgba(32, 191, 255, .8); animation: rfsPulse 1.2s ease-in-out infinite; }
+#rf-startup .stp.done { color: #d6e9ff; }
+#rf-startup .stp.done .mk em { border-color: #1597ff; background: #1597ff;
+  box-shadow: 0 0 7px rgba(21, 151, 255, .7); }
+#rf-startup .stp.done .ok { opacity: 1; }
+@keyframes rfsPulse { 50% { box-shadow: 0 0 14px rgba(32, 191, 255, 1); } }
 /* ready */
-#rf-startup .rfs-ready { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -44%);
-  z-index: 1; padding: 46px 90px; text-align: center; opacity: 0; pointer-events: none;
-  background: radial-gradient(ellipse at center, rgba(3, 9, 22, .82) 0, rgba(3, 9, 22, .55) 45%,
-                              transparent 72%);
-  transition: opacity .7s ease, transform .7s ease; }
-#rf-startup.ready .rfs-ready { opacity: 1; transform: translate(-50%, -50%); }
-#rf-startup .rfs-check { width: 96px; height: 96px; margin: 0 auto 14px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center; color: #4cc3ff;
+#rf-startup.ready .rfs-dim { background: rgba(3, 9, 22, .55); }
+#rf-startup .rfs-ready { position: absolute; inset: 0; margin: auto; width: 520px; height: 260px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; opacity: 0; pointer-events: none; transition: opacity .7s ease;
+  background: radial-gradient(ellipse at center, rgba(3, 9, 22, .82) 0, rgba(3, 9, 22, .5) 45%,
+                              transparent 72%); }
+#rf-startup.ready .rfs-ready { opacity: 1; }
+#rf-startup .rfs-check { width: 96px; height: 96px; margin-bottom: 14px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; color: #56c8ff;
   border: 3px solid #20bfff; background: radial-gradient(circle, rgba(21, 101, 255, .25), rgba(3, 9, 22, .2) 70%);
   box-shadow: 0 0 28px rgba(32, 191, 255, .65), inset 0 0 18px rgba(32, 191, 255, .35); }
 #rf-startup .rfs-check svg { width: 52px; height: 52px; stroke-width: 2.4;
@@ -245,64 +269,50 @@ CSS = """
 @keyframes rfsTick { to { stroke-dashoffset: 0; } }
 #rf-startup .rfs-ready-t { font-size: 30px; font-weight: 700; color: #F8FAFC; }
 #rf-startup .rfs-ready-s { margin-top: 6px; font-size: 15px; color: #CBD5E1; }
-#rf-startup .rfs-skip { position: absolute; z-index: 1; right: 22px; bottom: 18px; background: rgba(7, 21, 37, .55);
-  color: #94A3B8; border: 1px solid rgba(80, 130, 190, .35); border-radius: 8px; padding: 5px 14px;
-  font: 600 12px 'Segoe UI', system-ui, sans-serif; cursor: pointer; }
+#rf-startup .rfs-skip { position: absolute; right: 22px; bottom: 18px; z-index: 1;
+  background: rgba(7, 21, 37, .6); color: #94A3B8; border: 1px solid rgba(80, 130, 190, .35);
+  border-radius: 8px; padding: 5px 14px; font: 600 12px 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer; }
 #rf-startup .rfs-skip:hover { color: #E2E8F0; border-color: #1597FF; }
 @media (prefers-reduced-motion: reduce) {
   #rf-startup .st, #rf-startup .tr, #rf-startup .tw, #rf-startup.s3 .cn::after,
   #rf-startup .stp.active .mk em { animation: none !important; }
-  #rf-startup .rfs-stage { animation: none; transform: translate(-50%, -50%); }
 }
 """.replace("ASPECT", f"{_ASPECT:.4f}")
 
 JS = """
 (function () {
-  var KEY = 'rf_startup_done', doc = document;
-  try { if (sessionStorage.getItem(KEY)) return; } catch (e) {}
-  if (doc.getElementById('rf-startup')) return;
-  var cfg = __CFG__;
-  var reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var speed = reduced ? 0.5 : 1;
+  var KEY = 'rf_startup_done', doc = document, cfg = __CFG__;
+  var noop = { msg: function () {} };
+  var seen = false;
+  try { seen = !!sessionStorage.getItem(KEY); } catch (e) {}
+  // already prepared, and this tab has seen the startup: nothing to show
+  if ((cfg.warm && seen) || doc.getElementById('rf-startup')) { window.rfStartup = noop; return; }
   var st = doc.createElement('style'); st.id = 'rf-startup-css'; st.textContent = cfg.css;
   doc.head.appendChild(st);
   var root = doc.createElement('div'); root.id = 'rf-startup'; root.innerHTML = cfg.html;
-  root.setAttribute('role', 'status'); root.setAttribute('aria-label', 'Initialising RF Optimization');
+  root.setAttribute('role', 'status'); root.setAttribute('aria-live', 'polite');
+  var dim = doc.createElement('div'); dim.className = 'rfs-dim';
+  root.querySelector('.rfs-stage').appendChild(dim);
   doc.body.appendChild(root);
-  root.querySelector('.rfs-blur').style.backgroundImage = 'url(' + cfg.bg + ')';
   try { sessionStorage.setItem(KEY, '1'); } catch (e) {}
 
   var q = function (s) { return root.querySelector(s); };
   var fill = q('.rfs-track i'), pct = q('.rfs-bar b'), label = q('.rfs-status span');
-  var steps = root.querySelectorAll('.stp'), tl = cfg.timeline, shown = null, step = -2;
-  var t0 = null, timers = [], raf = 0, ended = false;
+  var steps = root.querySelectorAll('.stp');
+  var total = 0, done = 0, shownPct = 0, serverReady = false, ended = false, readyAt = 0;
+  var t0 = performance.now(), lastWord = t0, raf = 0, timers = [];
 
   function setStatus(text) {
-    if (text === shown) return;
-    shown = text;
+    if (!text || label.textContent === text) return;
     label.classList.add('out');
-    timers.push(setTimeout(function () { label.textContent = text; label.classList.remove('out'); }, 260));
+    timers.push(setTimeout(function () { label.textContent = text; label.classList.remove('out'); }, 220));
   }
   function setStep(k) {
-    if (k === step) return;
-    step = k;
-    for (var i = 0; i < steps.length; i++) {
+    for (var i = 0; i !== steps.length; i++) {
       steps[i].classList.toggle('done', i < k);
       steps[i].classList.toggle('active', i === k);
     }
-  }
-  function at(sec, fn) { timers.push(setTimeout(fn, sec * 1000 * speed)); }
-  function frame(now) {
-    if (t0 === null) t0 = now;
-    var t = (now - t0) / 1000 / speed, i = 0;
-    while (i < tl.length - 1 && t >= tl[i + 1][0]) i++;
-    var a = tl[i], b = tl[Math.min(i + 1, tl.length - 1)];
-    var f = b[0] > a[0] ? Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0]))) : 1;
-    var p = a[1] + (b[1] - a[1]) * (f * f * (3 - 2 * f));
-    fill.style.width = p.toFixed(2) + '%';
-    pct.textContent = Math.round(p) + '%';
-    setStatus(a[2]); setStep(a[3]);
-    if (!ended) raf = requestAnimationFrame(frame);
   }
   function finish() {
     if (ended) return;
@@ -311,47 +321,85 @@ JS = """
     root.classList.add('leave');
     setTimeout(function () { root.remove(); st.remove(); }, 950);
     doc.removeEventListener('keydown', onKey, true);
+    window.rfStartup = noop;
   }
   function onKey(e) { if (e.key === 'Escape') finish(); }
   doc.addEventListener('keydown', onKey, true);
   q('.rfs-skip').addEventListener('click', finish);
 
-  function go() {
-    requestAnimationFrame(function () { root.classList.add('s1'); });
-    at(1.5, function () { root.classList.add('s2'); });
-    at(3.4, function () { root.classList.add('s3'); });
-    at(cfg.ready, function () { root.classList.add('ready'); });
-    at(cfg.leave, finish);
-    raf = requestAnimationFrame(frame);
+  // the bar follows the tasks done; it only eases between real values
+  function frame(now) {
+    var target = total ? 100 * done / total : 0;
+    shownPct += (target - shownPct) * 0.12;
+    if (Math.abs(target - shownPct) < 0.05) shownPct = target;
+    fill.style.width = shownPct.toFixed(2) + '%';
+    pct.textContent = Math.floor(shownPct + 1e-6) + '%';
+    if (serverReady && !readyAt && shownPct >= 100 && (now - t0) / 1000 >= cfg.minShow) {
+      readyAt = now;
+      setStep(steps.length);
+      setStatus('Ready');
+      timers.push(setTimeout(function () { root.classList.add('ready'); }, 350));
+      timers.push(setTimeout(finish, 1700));
+    }
+    if (!serverReady && (now - lastWord) / 1000 > cfg.stall) { finish(); return; }
+    if (!ended) raf = requestAnimationFrame(frame);
   }
-  var img = q('.rfs-bg');
-  if (img.complete) go();
-  else {
-    var started = false, start = function () { if (!started) { started = true; go(); } };
-    img.addEventListener('load', start); img.addEventListener('error', start);
-    setTimeout(start, 1500);               // never wait long on the picture
-  }
+  window.rfStartup = {
+    msg: function (m) {
+      lastWord = performance.now();
+      if (m.type === 'begin') { total = m.total || 0; }
+      else if (m.type === 'task') { setStatus(m.label); setStep(m.step); }
+      else if (m.type === 'done') { done = Math.min(total, done + 1); }
+      else if (m.type === 'ready') {
+        serverReady = true; done = total;
+        setStatus('Almost Ready');
+      }
+    }
+  };
+  requestAnimationFrame(function () { root.classList.add('s1'); });
+  timers.push(setTimeout(function () { root.classList.add('s2'); }, 1500));
+  timers.push(setTimeout(function () { root.classList.add('s3'); }, 3400));
+  raf = requestAnimationFrame(frame);
 })();
 """
 
 
-def show() -> None:
-    """Add the startup screen, once per Streamlit session; in the browser it
-    plays once per tab (sessionStorage), and the app loads underneath it."""
-    if st.session_state.get("_rf_startup"):
-        return
-    st.session_state["_rf_startup"] = True
-    cfg = {"css": CSS, "html": markup(), "bg": BG_URL, "timeline": TIMELINE,
-           "ready": READY_AT, "leave": LEAVE_AT}
-    js = JS.replace("__CFG__", json.dumps(cfg).replace("</", "<\\/"))
-    # st.html sanitises its HTML, and a script whose text holds markup (this
-    # one carries the layer's) is dropped whole: it rides base64-encoded, and a
-    # loader free of any markup runs it
+def _encoded(js: str) -> str:
+    """st.html sanitises a script whose text holds markup (this one carries the
+    layer's) and drops it whole: it rides base64-encoded, run by a loader free
+    of any markup."""
     b64 = base64.b64encode(js.encode("utf-8")).decode("ascii")
-    st.html("<script>(function(){var s=atob('" + b64 + "'),b=new Uint8Array(s.length);"
+    return ("<script>(function(){var s=atob('" + b64 + "'),b=new Uint8Array(s.length);"
             "for(var i=0;i!==s.length;i++)b[i]=s.charCodeAt(i);"
-            "new Function(new TextDecoder().decode(b))();})();</script>",
-            unsafe_allow_javascript=True)
+            "new Function(new TextDecoder().decode(b))();})();</script>")
 
 
-__all__ = ["BG_URL", "CITIES", "LINKS", "STEPS", "TIMELINE", "markup", "show"]
+def show(warm: bool = False) -> None:
+    """Put the startup screen up. `warm`: everything is already prepared in
+    this server process — a tab that has seen the startup then skips it."""
+    cfg = {"css": CSS, "html": markup(), "warm": bool(warm), "minShow": MIN_SHOW,
+           "stall": STALL}
+    js = JS.replace("__CFG__", json.dumps(cfg).replace("</", "<\\/"))
+    st.html(_encoded(js), unsafe_allow_javascript=True)
+
+
+def message(m: dict) -> str:
+    """One preparation message for the screen, as a script free of markup."""
+    return ("<script>window.rfStartup&&window.rfStartup.msg("
+            + json.dumps(m).replace("<", "\\u003c").replace(">", "\\u003e") + ")</script>")
+
+
+def run_preparation() -> list[dict]:
+    """The real preparation (`_warmup`), reported to the startup screen as it
+    goes; the screen says Ready when it is done. Returns the tasks' results."""
+    import _warmup
+    bus = st.container(key="rf_startup_bus")
+
+    def report(m: dict) -> None:
+        bus.html(message(m), unsafe_allow_javascript=True)
+
+    return _warmup.run(report)
+
+
+__all__ = ["BG_URL", "CITIES", "LINKS", "STEPS", "background", "markup", "message",
+           "run_preparation", "show"]

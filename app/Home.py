@@ -28,15 +28,24 @@ st.set_page_config(page_title="RF Optimization",
 from _ui import LOGO_SVG, inject_css  # noqa: E402  (needs the path above)
 import _resources  # noqa: E402
 import _startup  # noqa: E402
+import _warmup  # noqa: E402
 
-# the startup screen, first thing: the app loads underneath it (once per tab)
-_startup.show()
+# One loading for the whole system. The first run of a session puts the
+# startup screen up, first thing, then prepares every dataset and service the
+# pages read (`_warmup`, reported to the screen as it goes): the pages then
+# open from memory, with no loading of their own.
+_first = not st.session_state.get("_rf_prepared")
+if _first:
+    _startup.show(_warmup.is_warm())
 
 st.logo(LOGO_SVG, size="large")
 inject_css()
 # the Data Resources store, read on every start; on the very first start it
 # takes over the files the pages used to keep or find themselves
 _resources.ready()
+if _first:
+    _startup.run_preparation()
+    st.session_state["_rf_prepared"] = True
 
 # only pages that really exist; the map keeps its `site_map` URL and the KPI
 # Overview its `kpi_analysis` one. Streamlit lists the unlabelled pages first,

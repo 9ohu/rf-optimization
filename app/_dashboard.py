@@ -90,7 +90,7 @@ def kpi_frames():
     return key, frames
 
 
-@st.cache_resource(show_spinner="Counting the KPI issues of each day…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _by_day(key: tuple, _frames) -> pd.DataFrame:
     """Sites with an issue, and sites critical, on each day of the window —
     each day judged exactly as the whole window is."""
@@ -132,7 +132,7 @@ def kpi() -> dict | None:
             "by_day": _by_day(key, frames), "start": h.start, "end": h.end}
 
 
-@st.cache_resource(show_spinner="Reading the site list…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _kmz_sites(path: str, on_air: frozenset = frozenset()) -> pd.DataFrame:
     """Every KMZ site with its air status and position — the Sites map's own,
     with a site the EP tracker lists as active counted On Air."""

@@ -223,54 +223,12 @@ section[data-testid="stMain"] { overflow: hidden !important; }
 
 
 # --------------------------------------------------------------------------- #
-@st.cache_resource(show_spinner="Parsing the R5 Sites KMZ…")
-def _load_kmz_path(path: str):
-    """Every site of the KMZ. The file is the R5 site list itself, so nothing is
-    filtered out of it: the region filter (BAS / NAS / EMA / SAM site-ID
-    prefixes) dropped 12 of its 1,710 sites — USM0728-USM0733, UNS0140-UNS0143,
-    UEA0727 and IFIA102 — although the KMZ places each of them with valid
-    coordinates."""
-    from rfopt.ingest.kmz_sites import load_kmz_sites
-    return load_kmz_sites(path, region=None)
-
+# the page's data loaders live in `_site_data` (prepared at startup)
+from _site_data import (load_ep_path as _load_ep_path,  # noqa: E402
+                        load_kmz_path as _load_kmz_path,
+                        topology_index as _topology_index)
 
 _EP_TECH = {"4G": "LTE", "3G": "UMTS", "2G": "GSM"}
-
-
-@st.cache_resource(show_spinner="Reading the EP tracker…")
-def _load_ep_path(path: str) -> pd.DataFrame:
-    """Every R5 cell in the Engineering Parameter tracker, all technologies.
-
-    Read lazily — only when a sector is actually opened, or a topology is
-    picked — so the map itself never waits on a 30 MB workbook.  The Deactive
-    sheets come too: a sector the KMZ still shows On Air but the tracker has
-    deactivated is exactly the kind of divergence worth seeing.
-    """
-    from rfopt.ingest.cellparams import load_cell_params
-    frames = []
-    for tech in ("LTE", "UMTS", "GSM"):
-        try:
-            frames.append(load_cell_params(path, technology=tech, region="R5",
-                                           include_deactive=True).df)
-        except Exception:
-            continue              # that technology's sheet isn't in this book
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
-@st.cache_resource(show_spinner="Reading site topology from the EP tracker…",
-                   max_entries=2)
-def _topology_index(path: str) -> tuple[dict, dict]:
-    """Sector id → the tracker's topology values (Macro, Micro, Indoor …),
-    and the same per site for the sectors the tracker numbers differently."""
-    ep = _load_ep_path(path)
-    if ep.empty or not {"is_outdoor", "site_id", "sector_id"} <= set(ep.columns):
-        return {}, {}
-    d = pd.DataFrame({"site": ep["site_id"].astype(str).str.upper(),
-                      "sector": ep["sector_id"].astype(str).str.upper(),
-                      "t": ep["is_outdoor"].astype(str).str.strip()})
-    d = d[~d["t"].str.lower().isin(["", "nan", "none"])]
-    return (d.groupby("sector")["t"].agg(frozenset).to_dict(),
-            d.groupby("site")["t"].agg(frozenset).to_dict())
 
 
 def _topology_mask(sect: pd.DataFrame, by_sector: dict, by_site: dict,

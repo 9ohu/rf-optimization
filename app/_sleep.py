@@ -185,7 +185,7 @@ def problem_times(path: str, _sha: str) -> pd.Series:
     return out.drop_duplicates("id").set_index("id")["t"]
 
 
-@st.cache_resource(show_spinner="Reading the KPI of every sector…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def sector_facts(key: tuple) -> dict:
     """Every serving sector the 4G export measures: its hours, and the cells
     behind it. The EP tracker says which cells a sector holds, exactly as Bulk
@@ -245,7 +245,7 @@ def flow_facts(key: tuple) -> dict:
     return A.site_flow_control(data, column, data["site_id"].astype(str))
 
 
-@st.cache_resource(show_spinner="Checking the sleep tickets…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
              _grids: list, _kmz: pd.DataFrame | None, _times: pd.Series,
              _sites: pd.DataFrame | None = None,

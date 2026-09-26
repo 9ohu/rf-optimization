@@ -293,7 +293,7 @@ def _load_source(sha: str, _ds, rows: tuple) -> pd.DataFrame:
     return source_columns(_ds.read_bytes(), _ds.name, rows)
 
 
-@st.cache_resource(show_spinner="Reading the Daily Target…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _load_tickets(sha: str, _ds) -> pd.DataFrame:
     t = parse_target(_ds.read_bytes(), _ds.name)
     t["problem_local"] = local_time(t["problem_time"])
@@ -308,7 +308,7 @@ def _first(values) -> str:
     return ""
 
 
-@st.cache_resource(show_spinner="Reading the EP tracker…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _site_table(path: str) -> pd.DataFrame:
     ep = load_ep_all(path)
     if ep is None or ep.empty or "site_id" not in ep.columns:
@@ -327,7 +327,7 @@ def _site_table(path: str) -> pd.DataFrame:
     return d.groupby("site_id").agg(**agg) if agg else pd.DataFrame()
 
 
-@st.cache_resource(show_spinner="Reading the KPI exports…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _read_frames(key: tuple, _sources: dict):
     """One read of each export of the active KPI Data: the judged frames and
     the context frames. The files of one technology are read as one export
@@ -373,7 +373,7 @@ def _load_tracks(key: tuple, _sources: dict):
     return build_tracks(frames), build_indicators(extra)
 
 
-@st.cache_resource(show_spinner="Reading the KPIs per sector…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _load_sector_tracks(key: tuple, _sources: dict):
     """The same judged KPI tracks per sector — what a ticket re-analysed at
     the user's location is judged on (`rfopt.complaints.relocate`)."""
@@ -393,7 +393,7 @@ def window_setting() -> tuple[str, float]:
     return label, float(WINDOWS[label])
 
 
-@st.cache_resource(show_spinner="Correlating the tickets with the network…", max_entries=6)
+@st.cache_resource(show_spinner=False, max_entries=6)
 def _analyse(sha: str, kpi_key: tuple, window_h: float, _tickets, _tracks) -> list:
     return [analyse_ticket(t.site_id if isinstance(t.site_id, str) else "",
                            t.problem_local, _tracks, window_h)
@@ -407,7 +407,7 @@ def _noc_all(sha: str, kpi_key: tuple, window_h: float, _tickets, _analysis, _in
             for t, a in zip(_tickets.itertuples(index=False), _analysis)]
 
 
-@st.cache_resource(show_spinner="Reading the coverage around the sites…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _site_rsrp(cov_key: tuple, site_key: tuple, _files: tuple, _sites: dict) -> dict:
     from rfopt.geo.coverage import load_bands
     _, covered = load_bands()
@@ -854,7 +854,7 @@ def relocations(sha: str, tickets, kpi_key: tuple, kpi_files: dict, tracks,
                       rows, kpi_files, tracks, cov_kept)
 
 
-@st.cache_resource(show_spinner="Re-analysing at the user location…", max_entries=4)
+@st.cache_resource(show_spinner=False, max_entries=4)
 def _relocated(sig: tuple, data_key: tuple, kpi_key: tuple, window_h: float, cov_key: tuple,
                _tickets, _rows: dict, _kpi_files: dict, _tracks, _cov: dict) -> dict:
     import _relocate as RL

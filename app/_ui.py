@@ -112,6 +112,11 @@ header[data-testid="stHeader"] button, header[data-testid="stHeader"] a {
     pointer-events: auto;
 }
 img.rf-ic { display: block; flex: 0 0 auto; }
+/* one loading for the whole system: the startup screen. Streamlit's own
+   running indicator (top-right, with Stop) is not shown, and the startup's
+   message channel takes no room */
+[data-testid="stStatusWidget"] { display: none !important; }
+.st-key-rf_startup_bus { display: none !important; }
 
 /* ---- top header bar -------------------------------------------------- */
 .st-key-rf_header {
