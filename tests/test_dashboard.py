@@ -177,7 +177,9 @@ def test_the_dashboard_is_the_landing_page_and_data_resources_is_listed():
     home = (APP / "Home.py").read_text(encoding="utf-8")
     first = home.split('pages = {')[1].split("],")[0]
     assert 'views/overview.py", title="Dashboard"' in first and "default=True" in first
-    assert 'views/dashboard.py", title="Daily Worklist"' in first     # the old page, renamed
+    # the Daily Worklist is gone: its page, its entry and its code
+    assert "Daily Worklist" not in home and "views/dashboard.py" not in home
+    assert not (APP / "views" / "dashboard.py").exists()
     for page in ("views/site_map.py", "views/kpi_analysis.py", "views/kpi_draw.py",
                  "views/complaint_analysis.py", "views/ticket_history.py",
                  "views/data_resources.py"):
@@ -186,6 +188,6 @@ def test_the_dashboard_is_the_landing_page_and_data_resources_is_listed():
     css = (APP / "_ui.py").read_text(encoding="utf-8")
     assert 'a[href$="/data_resources"]' not in css
     # and no page carries a data monitor beside it
-    for page in ("views/overview.py", "views/dashboard.py", "views/site_map.py",
+    for page in ("views/overview.py", "views/site_map.py",
                  "views/ticket_history.py", "views/kpi_draw.py"):
         assert "R.source_card(" not in (APP / page).read_text(encoding="utf-8"), page

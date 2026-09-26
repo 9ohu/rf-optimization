@@ -1,6 +1,6 @@
 """RF Optimizer - app entry point.
 
-Dashboard (the executive overview), Daily Worklist (the daily complaint list),
+Dashboard (the executive overview),
 Sites (the map), KPI Analysis — its
 Overview of the 4G + 3G hourly exports and Draw Data for their charts —,
 Complaints (Delay Tickets Analysis; History of Tickets, with Tickets Details as its
@@ -54,8 +54,6 @@ pages = {
     "": [
         st.Page("views/overview.py", title="Dashboard", icon=":material/dashboard:",
                 url_path="home", default=True),
-        st.Page("views/dashboard.py", title="Daily Worklist",
-                icon=":material/fact_check:"),
         st.Page("views/site_map.py", title="Sites", icon=":material/cell_tower:"),
     ],
     "KPI Analysis": [

@@ -19,8 +19,6 @@ DL = Path.home() / "Downloads"
 
 PRIO_EMOJI = {"P1": "\U0001F534", "P2": "\U0001F7E0", "P3": "\U0001F7E1",
               "P4": "\U0001F7E2"}
-# P1-P4 in the status palette: P1 is critical red, P4 is healthy green
-PRIO_HEX = {"P1": "#EF4444", "P2": "#FB923C", "P3": "#FACC15", "P4": "#22C55E"}
 SEV_EMOJI = {"critical": "\U0001F534", "warning": "\U0001F7E0", "ok": "\U0001F7E2",
              "info": "\u26AA"}
 
@@ -46,13 +44,6 @@ def src_of(upload, path):
 SRC_HASH = {NamedBytes: lambda b: (b.name, b.getbuffer().nbytes)}
 
 
-@st.cache_resource(show_spinner=False,
-                   hash_funcs=SRC_HASH)
-def load_params(src, tech: str = "LTE"):
-    from rfopt.ingest.cellparams import load_cell_params
-    return load_cell_params(src, technology=tech, region="R5")
-
-
 @st.cache_resource(show_spinner=False, hash_funcs=SRC_HASH)
 def load_kpi(src):
     from rfopt.ingest.hourly_kpi import load_hourly_kpi
@@ -66,7 +57,7 @@ _KPI_IDS = {"datetime", "granularity", "technology", "site_id", "sector", "secto
 def load_kpi_files(paths: tuple):
     """Several 4G hourly exports as one: one row per cell and hour however many
     files there are (the most recent file last: its value is the one used). A
-    file with none of the worklist's KPIs adds nothing but its notes."""
+    file with none of the KPIs adds nothing but its notes."""
     from rfopt.ingest.hourly_kpi import HourlyKpiLoad, merge_hourly
     loads = [load_kpi(p) for p in paths]
     if len(loads) == 1:
@@ -82,17 +73,6 @@ def load_kpi_files(paths: tuple):
 def load_kpi_3g(src):
     from rfopt.ingest.hourly_kpi import load_hourly_kpi_3g
     return load_hourly_kpi_3g(src)
-
-
-@st.cache_data(show_spinner=False,
-               hash_funcs=SRC_HASH)
-def load_history(src) -> dict:
-    from rfopt.complaints import load_complaints
-    try:
-        cc = load_complaints(src, region="R5")
-        return cc["site_id"].value_counts().to_dict()
-    except Exception:
-        return {}
 
 
 # --------------------------------------------------------------------------- #

@@ -78,16 +78,24 @@ ICONS = {
                '<path d="M12 7.5V12l3 2"/></svg>',
 }
 
-# the sidebar brand (st.logo takes an SVG string)
+# the Huawei flower: eight petals fanned from one point, the inner ones longest
+_PETAL = "M0 0C-5.4-7-6.6-15.5-3.4-22.5C-1.6-26.2 1.6-26.2 3.4-22.5C6.6-15.5 5.4-7 0 0Z"
+_FLOWER = "".join(
+    f'<path d="{_PETAL}" transform="rotate({a}) scale({s})"/>'
+    for a, s in ((-80, .62), (-54, .8), (-29, .94), (-7, 1.0),
+                 (7, 1.0), (29, .94), (54, .8), (80, .62)))
+
+# the sidebar brand (st.logo takes an SVG string): HUAWEI, and its author
 LOGO_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="210" height="36" '
-    'viewBox="0 0 210 36"><g fill="none" stroke="#20BFFF" stroke-width="1.9" '
-    'stroke-linecap="round" stroke-linejoin="round" '
-    f'transform="translate(1 2) scale(1.33)">{_TOWER}</g>'
-    '<text x="42" y="17" font-family="Segoe UI, system-ui, sans-serif" '
-    'font-size="15.5" font-weight="700" fill="#F1F5F9">RF Optimization</text>'
-    '<text x="42" y="31" font-family="Segoe UI, system-ui, sans-serif" '
-    'font-size="10.5" fill="#94A3B8">Copyright &#169; Shamsaldin Ali</text></svg>')
+    '<svg xmlns="http://www.w3.org/2000/svg" width="236" height="52" '
+    'viewBox="0 0 236 52"><defs><linearGradient id="hw" x1="0" y1="0" x2="0" y2="1">'
+    '<stop offset="0" stop-color="#FF2A3A"/><stop offset="1" stop-color="#C7000B"/>'
+    '</linearGradient></defs>'
+    f'<g fill="url(#hw)" transform="translate(24 36)">{_FLOWER}</g>'
+    '<text x="56" y="27" font-family="Segoe UI, Arial, sans-serif" font-size="23" '
+    'font-weight="700" letter-spacing="1.6" fill="#F8FAFC">HUAWEI</text>'
+    '<text x="57" y="45" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" '
+    'letter-spacing=".3" fill="#9FB4CC">&#169; Shamsaldin Ali</text></svg>')
 
 
 @lru_cache(maxsize=256)
@@ -117,11 +125,81 @@ img.rf-ic { display: block; flex: 0 0 auto; }
    message channel takes no room */
 [data-testid="stStatusWidget"] { display: none !important; }
 .st-key-rf_startup_bus { display: none !important; }
+/* no Deploy button and no ⋮ menu in the top-right corner */
+[data-testid="stAppDeployButton"], [data-testid="stMainMenu"] { display: none !important; }
+
+/* ---- the main background: Iraq's network at night --------------------- */
+/* Behind every page, in the main area (the page scrolls over it, the map
+   stays put). A dark veil keeps the panels and charts readable. */
+[data-testid="stApp"] { background: #050D19; }
+[data-testid="stMain"] {
+    background:
+        radial-gradient(ellipse at 50% 46%, rgba(4, 11, 22, .22) 0%,
+                        rgba(4, 11, 22, .44) 64%, rgba(3, 8, 16, .78) 100%),
+        linear-gradient(180deg, rgba(4, 11, 22, .30) 0%, rgba(4, 11, 22, 0) 26%),
+        url("/app/static/main/rf_main_bg.png") center 42% / cover no-repeat,
+        #050D19;
+    text-shadow: 0 1px 3px rgba(2, 6, 14, .75);
+}
+/* the panels are dark glass over it: the map shows through, the content reads */
+[class*="st-key-rf_card"], .rf-kpi, .rf-card {
+    background: rgba(7, 19, 36, .62) !important;
+    border-color: rgba(64, 160, 255, .24) !important;
+    -webkit-backdrop-filter: blur(4px) saturate(120%);
+    backdrop-filter: blur(4px) saturate(120%);
+    box-shadow: 0 8px 26px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(160, 215, 255, .06);
+}
+
+/* ---- the sidebar: dark glass, a thin lit edge, the tower below --------- */
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, rgba(10, 24, 44, .97) 0%,
+                                rgba(6, 15, 29, .97) 55%, #040A15 100%);
+    border-right: 1px solid rgba(32, 191, 255, .30) !important;
+    box-shadow: 1px 0 0 rgba(32, 191, 255, .08), 6px 0 28px rgba(21, 151, 255, .10);
+}
+/* the telecom tower, part of the sidebar: it collapses with it */
+[data-testid="stSidebar"]::before {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; z-index: 0;
+    aspect-ratio: 860 / 1225; max-height: clamp(190px, calc(100% - 430px), 64%);
+    pointer-events: none;
+    background: url("/app/static/main/rf_sidebar_tower.png") 22% bottom / cover no-repeat;
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, .55) 24%,
+                                        #000 46%);
+    mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, .55) 24%, #000 46%);
+}
+[data-testid="stSidebar"][aria-expanded="false"]::before { display: none; }
+[data-testid="stSidebarContent"] { position: relative; z-index: 1; background: transparent;
+    text-shadow: 0 1px 3px rgba(2, 6, 14, .8); }
+[data-testid="stSidebarHeader"] { height: auto; padding-top: 1.1rem; padding-bottom: .9rem;
+    margin-bottom: .5rem; border-bottom: 1px solid rgba(32, 191, 255, .16); }
+[data-testid="stSidebarLogo"] { height: 3.5rem; max-width: 100%; }
+[data-testid="stSidebarNavItems"] { gap: 2px; }
+[data-testid="stNavSectionHeader"] { margin-top: .7rem; }
+[data-testid="stNavSectionHeader"] p {
+    font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    color: #5FA8E6;
+}
+[data-testid="stSidebarNavLink"] {
+    border: 1px solid transparent; border-radius: 10px; margin: 1px 0;
+    transition: background .15s, border-color .15s, box-shadow .15s;
+}
+[data-testid="stSidebarNavLink"]:hover {
+    background: rgba(32, 191, 255, .08); border-color: rgba(32, 191, 255, .22);
+}
+[data-testid="stSidebarNavLink"][aria-current="page"] {
+    background: linear-gradient(90deg, rgba(21, 151, 255, .30), rgba(21, 151, 255, .07));
+    border-color: rgba(32, 191, 255, .45);
+    box-shadow: inset 3px 0 0 #20BFFF, 0 0 14px rgba(32, 191, 255, .16);
+}
+[data-testid="stSidebarNavLink"][aria-current="page"] [data-testid="stIconMaterial"] {
+    color: #20BFFF;
+}
 
 /* ---- top header bar -------------------------------------------------- */
 .st-key-rf_header {
-    background: linear-gradient(180deg, #0D2945 0%, #0B1F33 100%);
-    border: 1px solid #1E3A5F; border-radius: 12px; padding: 9px 14px;
+    background: linear-gradient(180deg, rgba(13, 41, 69, .80) 0%, rgba(8, 22, 40, .78) 100%);
+    -webkit-backdrop-filter: blur(9px); backdrop-filter: blur(9px);
+    border: 1px solid rgba(64, 160, 255, .24); border-radius: 12px; padding: 9px 14px;
 }
 .st-key-rf_header [data-testid="stTextInputRootElement"] {
     background: #071525; border-color: #1E3A5F; border-radius: 10px;
@@ -227,7 +305,8 @@ img.rf-ic { display: block; flex: 0 0 auto; }
 
 /* ---- sidebar --------------------------------------------------------- */
 [data-testid="stSidebar"] [data-testid="stExpander"] details {
-    border-color: #1E3A5F; border-radius: 10px; background: #0D2945;
+    border-color: rgba(32, 191, 255, .22); border-radius: 10px;
+    background: rgba(13, 41, 69, .72);
 }
 [data-testid="stExpander"] details summary p { font-weight: 600; }
 .rf-side-stat { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
