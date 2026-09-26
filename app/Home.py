@@ -27,6 +27,10 @@ st.set_page_config(page_title="RF Optimization",
 
 from _ui import LOGO_SVG, inject_css  # noqa: E402  (needs the path above)
 import _resources  # noqa: E402
+import _startup  # noqa: E402
+
+# the startup screen, first thing: the app loads underneath it (once per tab)
+_startup.show()
 
 st.logo(LOGO_SVG, size="large")
 inject_css()
