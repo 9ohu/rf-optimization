@@ -24,8 +24,8 @@ def test_the_background_is_the_high_resolution_original_as_provided():
     path = APP / "static" / "startup" / name
     assert S.BG_URL == "/app/static/startup/rf_startup_bg.png" and path.exists()
     im = Image.open(path)
-    assert im.format == "PNG" and im.size == (2048, 768)       # never resampled
-    assert abs(S._ASPECT - 2048 / 768) < 1e-6
+    assert im.format == "PNG" and im.size == (1672, 940)       # never resampled
+    assert abs(S._ASPECT - 1672 / 940) < 1e-6
     # one background: no older or smaller copy left beside it
     assert [n for n in S.BG_NAMES if (APP / "static" / "startup" / n).exists()] == [name]
 

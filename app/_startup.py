@@ -60,13 +60,13 @@ BG_URL, _ASPECT = background()
 _VW, _VH = round(1000 * _ASPECT), 1000     # the network layer's own units
 
 # the background's own coordinates, per cent of its width / height
-TOWER_LIGHTS = [(7.2, 29.8, 0.0), (7.14, 41.66, 0.6), (4.31, 69.19, 1.1), (9.15, 69.96, 1.7)]
+TOWER_LIGHTS = [(10.13, 26.82, 0.0), (10.07, 33.59, 0.6), (5.91, 54.07, 1.1), (11.61, 55.23, 1.7)]
 CITIES = {                              # the lit city nodes under the map pins
-    "baghdad": (72.21, 48.35), "basra": (80.55, 77.55), "mosul": (70.19, 17.46),
-    "erbil": (74.48, 29.42), "anbar": (61.13, 51.6),
+    "baghdad": (73.68, 49.75), "basra": (86.33, 71.25), "mosul": (70.96, 26.45),
+    "erbil": (76.11, 33.67), "anbar": (60.72, 51.92),
 }
-NODES = {"east": (79.37, 57.33), "south": (72.71, 73.73), "west": (55.27, 29.28),
-         "tower": (7.14, 41.66)}
+NODES = {"east": (81.17, 59.65), "south": (73.85, 71.15), "west": (58.33, 19.24),
+         "tower": (10.07, 33.59)}
 # the network links the data streams run along (from, to, bend in % of width)
 LINKS = [("anbar", "baghdad", -3), ("baghdad", "mosul", 3), ("mosul", "erbil", -3),
          ("erbil", "baghdad", 3), ("baghdad", "east", -2), ("east", "basra", 3),
@@ -115,11 +115,11 @@ def markup() -> str:
         f'd="{_link_path(pts[a], pts[b], bend)}"/>'
         for k, (a, b, bend) in enumerate(LINKS))
     # the blue light trails of the picture, from the tower towards the map
-    sx, sy = _VW / 2048, _VH / 768
+    sx, sy = _VW / 1672, _VH / 940          # the picture's own pixels
     trails = (f'<path class="tr" transform="scale({sx:.4f} {sy:.4f})" '
-              'd="M0,470 C300,520 520,640 820,640 S1120,560 1320,540"/>'
+              'd="M0,470 C250,540 430,690 720,770 S1010,690 1100,592"/>'
               f'<path class="tr t2" transform="scale({sx:.4f} {sy:.4f})" '
-              'd="M0,560 C320,600 560,720 880,700 S1180,610 1400,580"/>')
+              'd="M0,560 C260,650 470,820 800,845 S1080,730 1180,650"/>')
     lights = "".join(f'<i class="tw" style="left:{x}%;top:{y}%;animation-delay:{d}s"></i>'
                      for x, y, d in TOWER_LIGHTS)
     cities = "".join(f'<i class="cn" style="left:{x}%;top:{y}%;--d:{k}"></i>'
@@ -158,13 +158,11 @@ CSS = """
   -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
   opacity: 1; transition: opacity .9s ease; }
 #rf-startup.leave { opacity: 0; pointer-events: none; }
-/* the picture at its own size, centred without any transform (nothing is
-   resampled twice, and text over it stays on whole pixels) */
+/* the picture fills the whole screen (16:9: a laptop screen exactly), centred
+   without any transform, never stretched out of its proportions */
 #rf-startup .rfs-stage { position: absolute; inset: 0; margin: auto;
-  width: max(100vw, calc(64vh * ASPECT)); height: calc(max(100vw, calc(64vh * ASPECT)) / ASPECT);
-  container-type: inline-size;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 6%, #000 94%, transparent 100%);
-          mask-image: linear-gradient(to bottom, transparent 0, #000 6%, #000 94%, transparent 100%); }
+  width: max(100vw, calc(100vh * ASPECT)); height: calc(max(100vw, calc(100vh * ASPECT)) / ASPECT);
+  container-type: inline-size; }
 #rf-startup .rfs-bg { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
   user-select: none; image-rendering: auto; opacity: .3; transition: opacity 1.4s ease; }
 #rf-startup.s1 .rfs-bg { opacity: 1; }
@@ -173,10 +171,10 @@ CSS = """
 /* the map, dark until it is revealed from Baghdad outward */
 #rf-startup .rfs-veil { position: absolute; left: 46%; top: 0; width: 54%; height: 100%;
   background: rgba(3, 9, 22, .9); --rfs-r: 0%;
-  -webkit-mask-image: radial-gradient(circle at 48.5% 48.4%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
+  -webkit-mask-image: radial-gradient(circle at 51.3% 49.8%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
                       linear-gradient(to right, transparent, #000 14%);
   -webkit-mask-composite: source-in;
-  mask-image: radial-gradient(circle at 48.5% 48.4%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
+  mask-image: radial-gradient(circle at 51.3% 49.8%, transparent var(--rfs-r), #000 calc(var(--rfs-r) + 16%)),
               linear-gradient(to right, transparent, #000 14%);
   mask-composite: intersect; transition: --rfs-r 2s cubic-bezier(.45, .05, .3, 1); }
 #rf-startup.s2 .rfs-veil { --rfs-r: 125%; }
@@ -215,7 +213,7 @@ CSS = """
 #rf-startup .tr.t2 { animation-duration: 8s; animation-delay: -3s; opacity: .7; }
 @keyframes rfsTrail { from { stroke-dashoffset: 2720; } to { stroke-dashoffset: 0; } }
 /* the loading panel under the title */
-#rf-startup .rfs-panel { position: absolute; left: 12.3%; top: 49.5%; width: 32%;
+#rf-startup .rfs-panel { position: absolute; left: 17.2%; top: 47.5%; width: 32%;
   opacity: 0; transition: opacity .8s ease; }
 #rf-startup.s1 .rfs-panel { opacity: 1; transition-delay: .5s; }
 #rf-startup.ready .rfs-panel { opacity: 0; transition-delay: 0s; }
