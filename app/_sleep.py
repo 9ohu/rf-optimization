@@ -74,6 +74,15 @@ COLUMNS = [
 
 CSS = """
 <style>
+/* Sleep Analysis reads over the Iraq map: its cards and panels are a denser
+   glass than elsewhere, so the map stays behind them without crossing the text */
+[class*="st-key-sl_card"], .rf-kpi, .rf-card, [class*="st-key-rf_card"] {
+    background: rgba(6, 16, 31, .90) !important;
+    border-color: rgba(64, 160, 255, .24) !important;
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    border-radius: 12px;
+}
+[data-testid="stMain"] { text-shadow: 0 1px 2px rgba(2, 6, 14, .95), 0 0 7px rgba(2, 6, 14, .9); }
 .sl-bars { display: flex; flex-direction: column; gap: 6px; }
 .sl-bar { display: grid; grid-template-columns: 1fr 60px; align-items: center; gap: 10px;
     font-size: 11.5px; color: #CBD5E1; }

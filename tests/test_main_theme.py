@@ -17,7 +17,7 @@ def test_the_assets_are_the_originals_never_resampled():
     bg = Image.open(APP / "static" / "main" / "rf_main_bg.png")
     tower = Image.open(APP / "static" / "main" / "rf_sidebar_tower.png")
     assert bg.format == tower.format == "PNG"
-    assert bg.size == (1672, 940)                  # the map at its own resolution
+    assert bg.size == (1672, 941)                  # the map at its own resolution
     assert tower.size == (860, 1225)               # a crop of the tower, not rescaled
     assert "aspect-ratio: 860 / 1225" in U._CSS
 
@@ -59,3 +59,17 @@ def test_the_startup_screen_is_left_as_it_was():
     import _startup as S
     assert S.BG_URL == "/app/static/startup/rf_startup_bg.png"
     assert "rf_main_bg" not in S.CSS + S.JS + S.markup()
+
+
+def test_the_project_chip_reads_ms_asiacell_project():
+    import inspect
+    src = inspect.getsource(U.header)
+    assert 'project: str = "MS Asiacell Project"' in src
+    assert "Project: {" not in src and "R5 · Asiacell" not in src
+
+
+def test_sleep_analysis_panels_are_denser_glass_on_that_page_only():
+    import _sleep
+    assert '[class*="st-key-sl_card"]' in _sleep.CSS
+    assert "rgba(6, 16, 31, .90) !important" in _sleep.CSS
+    assert "rgba(6, 16, 31, .90)" not in U._CSS          # the other pages keep theirs

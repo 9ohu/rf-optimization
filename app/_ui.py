@@ -78,12 +78,14 @@ ICONS = {
                '<path d="M12 7.5V12l3 2"/></svg>',
 }
 
-# the Huawei flower: eight petals fanned from one point, the inner ones longest
-_PETAL = "M0 0C-5.4-7-6.6-15.5-3.4-22.5C-1.6-26.2 1.6-26.2 3.4-22.5C6.6-15.5 5.4-7 0 0Z"
+# the Huawei flower: eight separate petals fanned from one point, pointed at
+# the centre, the inner ones longest
+_PETAL = ("M0-1.6C-1.9-6-2.9-12.4-2.4-17.6C-2-21.9 2-21.9 2.4-17.6"
+          "C2.9-12.4 1.9-6 0-1.6Z")
 _FLOWER = "".join(
     f'<path d="{_PETAL}" transform="rotate({a}) scale({s})"/>'
-    for a, s in ((-80, .62), (-54, .8), (-29, .94), (-7, 1.0),
-                 (7, 1.0), (29, .94), (54, .8), (80, .62)))
+    for a, s in ((-79, .66), (-55, .82), (-32, .94), (-10, 1.0),
+                 (10, 1.0), (32, .94), (55, .82), (79, .66)))
 
 # the sidebar brand (st.logo takes an SVG string): HUAWEI, and its author
 LOGO_SVG = (
@@ -91,10 +93,10 @@ LOGO_SVG = (
     'viewBox="0 0 236 52"><defs><linearGradient id="hw" x1="0" y1="0" x2="0" y2="1">'
     '<stop offset="0" stop-color="#FF2A3A"/><stop offset="1" stop-color="#C7000B"/>'
     '</linearGradient></defs>'
-    f'<g fill="url(#hw)" transform="translate(24 36)">{_FLOWER}</g>'
-    '<text x="56" y="27" font-family="Segoe UI, Arial, sans-serif" font-size="23" '
+    f'<g fill="url(#hw)" transform="translate(26 43) scale(1.58)">{_FLOWER}</g>'
+    '<text x="60" y="27" font-family="Segoe UI, Arial, sans-serif" font-size="23" '
     'font-weight="700" letter-spacing="1.6" fill="#F8FAFC">HUAWEI</text>'
-    '<text x="57" y="45" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" '
+    '<text x="61" y="45" font-family="Segoe UI, Arial, sans-serif" font-size="11.5" '
     'letter-spacing=".3" fill="#9FB4CC">&#169; Shamsaldin Ali</text></svg>')
 
 
@@ -342,7 +344,7 @@ def header(title: str = "RF Optimization",
            subtitle: str = "Network Performance Dashboard", *,
            search_key: str | None = None,
            placeholder: str = "Search site, sector, or location…",
-           project: str = "R5 · Asiacell") -> str | None:
+           project: str = "MS Asiacell Project") -> str | None:
     """The top bar. Returns the search text when the page has a search."""
     now = dt.datetime.now().strftime("%b %d, %Y  %H:%M")
     q = None
@@ -364,7 +366,7 @@ def header(title: str = "RF Optimization",
                     f'<span class="rf-chip">{icon_img("calendar", PALETTE["cyan"], 15)}'
                     f'{_esc(now)}</span>'
                     f'<span class="rf-chip">{icon_img("pin", PALETTE["cyan"], 15)}'
-                    f'Project: {_esc(project)}</span></div>')
+                    f'{_esc(project)}</span></div>')
     return q
 
 
