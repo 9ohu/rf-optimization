@@ -89,6 +89,7 @@ _KPI_MAP_3G: dict[str, str] = {
     "3g availability ab": "cell_avail_pct",
     "3g availability": "cell_avail_pct",
     "vs ippm rtt means ms": "ipmm_rtt_ms",
+    "vs meanrtwp dbm": "ul_rtwp_dbm",
     "vs rscgroup flowctrol dl dropnum": "dl_flowctrl_drops",
 }
 _ID_COLS_3G = {"time": "time", "date": "date", "datetime": "datetime",
@@ -258,6 +259,9 @@ _OBJ_COLS = {"cell name": "object", "nodebname": "object",
              "bsc": "parent", "bsc name": "parent", "site name": "parent"}
 
 
+_CELL_OBJ = ("cell name", "cellname")
+
+
 def load_hourly_raw(path_or_buf, kpi_columns: list[str]) -> pd.DataFrame:
     """Load just the picked KPI columns, keeping the operator's own names.
 
@@ -292,8 +296,12 @@ def load_hourly_raw(path_or_buf, kpi_columns: list[str]) -> pd.DataFrame:
     # rename can collide; keep the first and move on
     df = df.rename(columns=ren)
     df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
+    # the level the export measures at: a cell (Cell Name / CellName) or a
+    # site (a NodeB / eNodeB name, or only a parent) — analysed at that level
+    level = "cell" if any(_norm(c) in _CELL_OBJ for c in cols) else "site"
     if "object" not in df.columns:
         df["object"] = df.get("parent", "").astype(str)
+    df["level"] = level
     df["object"] = df["object"].astype(str).str.strip()
     df["site_id"] = df["object"].str.extract(_SITE_RE.pattern)[0].str.upper()
     df["prefix"] = df["site_id"].str[:3]
@@ -317,7 +325,7 @@ def load_hourly_raw(path_or_buf, kpi_columns: list[str]) -> pd.DataFrame:
                 df.loc[df[c] == 0, c] = np.nan
     # `duplex` / `parent` are what the emailed pivot puts next to the cell
     # name (Cell FDD TDD Indication for 4G, RNC for 3G)
-    keep = ["datetime", "object", "site_id", "sector_id", "prefix"] + \
+    keep = ["datetime", "object", "site_id", "sector_id", "prefix", "level"] + \
            [c for c in ("duplex", "parent") if c in df.columns] + \
            [c for c in kpi_columns if c in df.columns]
     out = df[df["datetime"].notna() & df["object"].ne("")][keep]

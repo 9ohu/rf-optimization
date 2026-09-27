@@ -113,24 +113,29 @@ def test_map_kpi_bands_follow_the_operators_thresholds():
 
     assert canonical_name("LTE_Availability(%)@AB") == "cell_avail_pct"
 
+    # one Issue line (< 99 % availability): healthy shades, then the issue band
+    # — no warning band between them
     avail = pd.Series({"A-S1": 100.0, "B-S1": 99.5, "C-S1": 96.0,
                        "D-S1": float("nan")})
     bands, spec = band_sectors(avail, "LTE_Availability(%)@AB")
-    assert list(bands) == ["ok", "warning", "critical", "none"]
-    assert [k for k, _, _ in spec] == ["ok", "warning", "critical"]
-    assert spec[0][2] == "[99.9, 100]"       # the YAML's warning line up
-    assert spec[1][2] == "[99, 99.9)"
+    assert bands["A-S1"].startswith("ok") and bands["B-S1"].startswith("ok")
+    assert bands["C-S1"] == "critical" and bands["D-S1"] == "none"
+    keys = [k for k, _, _ in spec]
+    assert "warning" not in keys and keys[-1] == "critical"
+    assert spec[-1][2] == "[96, 99)"
 
-    # a "down" KPI reads the other way round: high PRB is the bad end
+    # a "down" KPI reads the other way round: PRB over 80 % is the bad end
     prb = pd.Series({"A-S1": 20.0, "B-S1": 75.0, "C-S1": 95.0})
     bands, spec = band_sectors(prb, "HW_DL PRB Avg Utilization(%)")
-    assert list(bands) == ["ok", "warning", "critical"]
-    assert spec[2][2] == "(85, 95]"
+    assert bands["A-S1"].startswith("ok") and bands["B-S1"].startswith("ok")
+    assert bands["C-S1"] == "critical"
+    assert spec[-1][2] == "(80, 95]"
 
-    rows = legend_rows(pd.Series(["ok", "ok", "critical", "none"]), spec)
-    assert rows[0][0] == KPI_BAND["ok"]
+    rows = legend_rows(pd.Series([spec[0][0], spec[0][0], "critical", "none"]), spec)
+    assert rows[0][0] == spec[0][1]
     assert rows[0][2] == "(2, 50.00%)"       # count and share, as on the map
     assert rows[-1][1] == "no data" and rows[-1][2] == "(1, 25.00%)"
+    assert KPI_BAND["critical"] in [r[0] for r in rows]
 
 
 def test_a_kpi_without_thresholds_is_banded_at_round_numbers():
@@ -172,16 +177,20 @@ def test_a_per_nodeb_export_still_colours_the_beams():
 
 
 def test_3g_kpis_use_3g_thresholds_but_totals_are_not_judged():
-    """RTT is a 3G KPI with its own thresholds (10 / 20 ms), so it gets
-    OK / Warning / Critical. A drop counter summed over a multi-day window must
-    not be read against a daily threshold — that one stays a magnitude ramp."""
+    """3G RTWP is a main KPI with its own line (worse than -90 dBm), so it is
+    judged. RTT has no threshold a Huawei source confirms, so it is shaded by
+    magnitude like a drop counter summed over a multi-day window."""
     import pandas as pd
 
     from _kpi_map import RAMP, band_sectors
 
+    rtwp = pd.Series({"A-S1": -104.0, "B-S1": -95.0, "C-S1": -85.0})
+    bands, _ = band_sectors(rtwp, "VS.MeanRTWP(dBm)")
+    assert bands["A-S1"].startswith("ok") and bands["C-S1"] == "critical"
+
     rtt = pd.Series({"A-S1": 3.0, "B-S1": 15.0, "C-S1": 40.0})
-    bands, _ = band_sectors(rtt, "VS.IPPM.Rtt.Means(ms)")
-    assert list(bands) == ["ok", "warning", "critical"]
+    _, spec = band_sectors(rtt, "VS.IPPM.Rtt.Means(ms)")
+    assert all(colour in RAMP for _, colour, _ in spec)
 
     drops = pd.Series({f"S{i}": float(v)
                        for i, v in enumerate([0, 50, 5000, 900000])})
@@ -215,12 +224,12 @@ def test_the_healthy_side_is_graded_so_the_map_is_not_one_green():
                      enumerate([5, 15, 25, 45, 60, 68, 78, 90])})
     bands, spec = band_sectors(prb, "HW_DL PRB Avg Utilization(%)")
     keys = [k for k, _, _ in spec]
-    assert keys[-2:] == ["warning", "critical"]
-    ok_keys = keys[:-2]
+    assert keys[-1] == "critical" and "warning" not in keys
+    ok_keys = keys[:-1]
     assert len(ok_keys) >= 2                     # more than one green
     assert all(c in OK_SHADES for k, c, _ in spec if k.startswith("ok"))
     assert bands["S0"] == ok_keys[0]             # lightest load, darkest green
-    assert bands["S6"] == "warning" and bands["S7"] == "critical"
+    assert bands["S6"].startswith("ok") and bands["S7"] == "critical"   # 78 ok, 90 > 80
 
     # a negative range is graded too: UL interference lives below -100 dBm
     ul = pd.Series({f"U{i}": v for i, v in
@@ -229,19 +238,19 @@ def test_the_healthy_side_is_graded_so_the_map_is_not_one_green():
     ok_keys = [k for k, _, _ in spec if k.startswith("ok")]
     assert len(ok_keys) >= 2
     assert bands["U0"] == ok_keys[0]             # quietest uplink, darkest green
-    assert bands["U6"] == "warning" and bands["U7"] == "critical"
+    assert bands["U6"].startswith("ok") and bands["U7"] == "critical"   # -108 ok, -100 > -105
 
 
 def test_an_empty_band_shows_an_open_interval_not_an_inverted_one():
-    """With no critical sector on the map the critical row read "(85, 78.07]",
+    """With no critical sector on the map the critical row read "(80, 78.07]",
     an interval running backwards. It is open-ended now."""
     import pandas as pd
 
     from _kpi_map import band_sectors
 
-    prb = pd.Series({"A": 10.0, "B": 40.0, "C": 60.0})       # nothing past 85
+    prb = pd.Series({"A": 10.0, "B": 40.0, "C": 60.0})       # nothing past 80
     _, spec = band_sectors(prb, "HW_DL PRB Avg Utilization(%)")
-    assert {k: t for k, _, t in spec}["critical"] == "(85, +∞)"
+    assert {k: t for k, _, t in spec}["critical"] == "(80, +∞)"
 
     avail = pd.Series({"A": 100.0, "B": 99.95})              # nothing below 99
     _, spec = band_sectors(avail, "LTE_Availability(%)@AB")

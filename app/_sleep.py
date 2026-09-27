@@ -33,8 +33,10 @@ from rfopt.kpi.trends import panels_for
 from rfopt.sleep import analysis as A
 
 SOLVE, NOT_SOLVE, NOT_CHECKED = A.SOLVE, A.NOT_SOLVE, A.NOT_CHECKED
-STATES = (NOT_SOLVE, SOLVE, NOT_CHECKED)
-TONE = {SOLVE: "#22C55E", NOT_SOLVE: "#EF4444", NOT_CHECKED: "#F59E0B"}
+NOT_TECHNICAL = A.NOT_TECHNICAL
+STATES = (NOT_SOLVE, SOLVE, NOT_CHECKED, NOT_TECHNICAL)
+TONE = {SOLVE: "#22C55E", NOT_SOLVE: "#EF4444", NOT_CHECKED: "#F59E0B",
+        NOT_TECHNICAL: "#94A3B8"}
 BAR = ["#F59E0B", "#FBBF24", "#1597FF", "#20BFFF", "#A78BFA", "#22C55E", "#F472B6", "#64748B"]
 OPEN = "sl_open"                     # the ticket the detail panel is showing
 
@@ -67,6 +69,7 @@ COLUMNS = [
     ("status", "Status", "text", 110),
     ("distance", "Distance", "text", 118),
     ("verdict", "Site Issue", "verdict", 126),
+    ("issue_hours", "Issue Hours", "num", 118),
     ("plan_status", "Plan Site Status", "air", 158),
     ("rsrp", "RSRP", "num", 104),
     ("description", "Description", "comment", 420),
@@ -255,17 +258,74 @@ def flow_facts(key: tuple) -> dict:
 
 
 @st.cache_resource(show_spinner=False, max_entries=2)
+def rtwp_facts(key: tuple) -> dict:
+    """site -> (hours with RTWP past its line, the worst hour, the average hour, those hours)."""
+    three = three_g()
+    if not three:
+        return {}
+    column = three_columns().get(A.RTWP)
+    if not column:
+        return {}
+    data = pd.concat([W.raw(b, (column,)) for b, _ in three], ignore_index=True)
+    if "site_id" not in data.columns:
+        return {}
+    return A.site_rtwp(data, column, data["site_id"].astype(str))
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def cell_grid(key: tuple, _grids: tuple):
+    """The coverage files as the map's native grid, read by position."""
+    from rfopt.geo.coverage import CellGrid
+    return CellGrid(list(_grids))
+
+
+def _serving(pop: pd.DataFrame, on_air: pd.DataFrame, all_sectors: pd.DataFrame) -> None:
+    """The serving sector, the way a Delay ticket's is found: with the user's
+    location, the ticket's own site (Site ID, else the site of its column-FB
+    sector) and its sector facing the location — the distance × azimuth best
+    server only when the ticket names no site. Without a location, the
+    sector the ticket names (column FB)."""
+    from rfopt.complaints.relocate import best_server, facing_sector, ticket_site
+    lat = pd.to_numeric(pop["latitude"], errors="coerce")
+    lon = pd.to_numeric(pop["longitude"], errors="coerce")
+    by_site = ({s: g for s, g in all_sectors.groupby(all_sectors["site_id"].astype(str).str.upper())}
+               if all_sectors is not None and len(all_sectors) else {})
+    for i in pop.index:
+        la, lo = lat.at[i], lon.at[i]
+        if pd.isna(la) or pd.isna(lo):
+            continue
+        site = ticket_site(pop.at[i, "site_id"]) or ticket_site(pop.at[i, "site"])
+        server = (facing_sector(float(la), float(lo), by_site.get(site, pd.DataFrame()))
+                  if site else best_server(float(la), float(lo), on_air))
+        if server is None:
+            continue
+        m = re.search(r"-S?(\d+)$", str(server.sector_id))
+        if not m:
+            continue
+        pop.at[i, "site"] = server.site_id
+        pop.at[i, "sector_num"] = float(m.group(1))
+        pop.at[i, "serving"] = f"{server.site_id}-{int(m.group(1))}"
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
 def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
              _grids: list, _kmz: pd.DataFrame | None, _times: pd.Series,
              _sites: pd.DataFrame | None = None,
-             _on_air: frozenset = frozenset()) -> pd.DataFrame:
-    """Every sleep ticket with its verdict, the RSRP measured where the
-    subscriber was, the status of its planned site and the comment that says
-    what the check read."""
+             _on_air: frozenset = frozenset(), _rtwp: dict | None = None,
+             _grid=None, _sectors: tuple = (None, None)) -> pd.DataFrame:
+    """Every sleep ticket with the reason it slept, its serving sector, its
+    verdict, the RSRP of the grid cell where the subscriber was, the issue
+    hours of its problem, the status of its planned site (shown, never the
+    verdict) and the comment that says what the check read."""
     pop = A.sleep_population(_history)
     if pop.empty:
         return pop
-    near = A.rsrp_frame(pop["latitude"], pop["longitude"], _grids)
+    _serving(pop, *_sectors)
+    # the RSRP of the grid cell at the user's location — never the serving sector
+    grid = _grid if _grid is not None else cell_grid((), tuple(_grids))
+    near = grid.at_many(pop["latitude"], pop["longitude"])
+    located = (pd.to_numeric(pop["latitude"], errors="coerce").notna()
+               & pd.to_numeric(pop["longitude"], errors="coerce").notna()).to_numpy()
     # how far the subscriber was from the site that served them
     where = (_sites if _sites is not None else pd.DataFrame()).reindex(pop["site"])
     pop["site_lat"] = where["latitude"].to_numpy() if len(where.columns) else np.nan
@@ -276,29 +336,44 @@ def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
                          pop["site_lat"], pop["site_lon"])]
     pop["distance"] = pop["metres"].map(A.fmt_metres)
     ev = _facts.get("evidence", {})
+    rtwp_all = _rtwp or {}
+    coverage = bool(getattr(grid, "ok", False))
     plan_cache: dict = {}
-    verdicts, why, status, rsrp = [], [], [], []
+    verdicts, why, status, rsrp, hours = [], [], [], [], []
     for n, r in enumerate(pop.itertuples(index=False)):
         site, num = r.site, r.sector_num
         one = ev.get((site, num)) if site and pd.notna(num) else None
-        point = A.point_of(near.iloc[n])
+        cell = near.iloc[n]
+        point = (A.Point(rsrp=float(cell["rsrp"]), mr=int(cell["mr"] or 0), metres=0.0,
+                         source="grid cell") if located[n] and pd.notna(cell["rsrp"]) else None)
         plan = ""
         if r.plan_site:
             if r.plan_site not in plan_cache:
                 plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz, _on_air)
             plan = plan_cache[r.plan_site]
-        v, text = A.judge(r.check, r.serving, one, point, plan, r.plan_site,
-                          _flow.get(site) if site else None, metres=r.metres)
+        flow = _flow.get(site) if site else None
+        rtwp = rtwp_all.get(site) if site else None
+        v, text = A.judge(r.check, r.serving, one, point, plan, r.plan_site, flow,
+                          metres=r.metres, rtwp=rtwp, located=bool(located[n]),
+                          coverage=coverage, comment=getattr(r, "comment", ""))
         verdicts.append(v)
         why.append(text)
         status.append(plan)
         rsrp.append(round(point.rsrp, 1) if point is not None else np.nan)
+        hours.append(np.nan if v == NOT_TECHNICAL else A.issue_hours(r.check, one, flow, rtwp))
     pop["verdict"] = verdicts
     pop["description"] = why
     pop["plan_status"] = status
     pop["rsrp"] = rsrp
-    pop["rsrp_m"] = near["metres"].to_numpy()
+    pop["issue_hours"] = hours
+    pop["no_grid"] = located & coverage & np.isnan(np.asarray(rsrp, dtype=float))
+    pop["rsrp_m"] = np.nan
     pop["mr"] = near["mr"].to_numpy()
+    # the other main KPIs of the site, beside the ticket's own
+    pop["flow_h"] = [(_flow.get(s) or (np.nan,))[0] if s else np.nan for s in pop["site"]]
+    pop["flow_max"] = [(_flow.get(s) or (0, np.nan))[1] if s else np.nan for s in pop["site"]]
+    pop["rtwp_h"] = [(rtwp_all.get(s) or (np.nan,))[0] if s else np.nan for s in pop["site"]]
+    pop["rtwp_max"] = [(rtwp_all.get(s) or (0, np.nan))[1] if s else np.nan for s in pop["site"]]
     pop["problem_time"] = (pd.to_datetime(pop["hpsm_id"].map(_times), errors="coerce")
                            if len(_times) else pd.NaT)
     return pop
@@ -324,9 +399,14 @@ def page_data():
     sites = site_points(W.ep_path() or "", kmz_file.sha1 if kmz_file else "", kmz)
     key = (hist_file.sha1, kpi_key, W.ep_key(), tuple(sorted(kept)),
            kmz_file.sha1 if kmz_file else "", len(times), len(sites))
+    rtwp = rtwp_facts(tuple(W.src_key(b) for b, _ in three))
+    grid = cell_grid(tuple(sorted(kept)), tuple(kept[k] for k in sorted(kept)))
+    import _relocate as RL
+    sectors = (RL.serving_sectors(), RL.site_sectors())
     # the EP tracker's active sites: On Air whatever the KMZ says (the key
     # already carries the EP file, so a new EP re-runs the checks)
-    df = analysed(key, history, facts, flow, grids, kmz, times, sites, R.ep_on_air())
+    df = analysed(key, history, facts, flow, grids, kmz, times, sites, R.ep_on_air(),
+                  rtwp, grid, sectors)
     missing = []
     if not four:
         missing.append("4G KPI Data")
@@ -503,6 +583,7 @@ def for_table(df: pd.DataFrame) -> pd.DataFrame:
     out["plan_site"] = out["plan_site"].replace("", pd.NA).fillna("")
     out["plan_status"] = out["plan_status"].replace("", pd.NA).fillna("")
     out["rsrp"] = out["rsrp"].map(lambda v: "" if pd.isna(v) else f"{v:g}")
+    out["issue_hours"] = out["issue_hours"].map(lambda v: "" if pd.isna(v) else f"{v:.0f}")
     out["distance"] = out["distance"].replace("-", "")
     out["wake_after"] = out["wake_after"].map(lambda v: "" if pd.isna(v) else f"{v:.0f}")
     for f in ("longitude", "latitude"):
@@ -569,15 +650,23 @@ def kpi_state(ev, row: pd.Series) -> list:
         unit = "%" if canon in (A.PRB, A.AVAIL) else " dBm"
         dec = 2 if canon == A.AVAIL else (1 if canon == A.RSSI else 0)
         text = f"{value:,.{dec}f}{unit}"
-        note = (f"{stat.over} h at/over {rule.critical:g}" if rule is not None and not up
-                else (f"{stat.over} h under {rule.critical:g}" if rule is not None else ""))
+        note = f"{stat.over} h with an issue" if rule is not None else ""
         out.append((A.KPI_NAME[canon], text, stat.over > 0, note))
+    # the 3G main KPIs, counted for the site
+    for name, h, mx, fmt in (("Flow Control (site)", "flow_h", "flow_max", ",.0f"),
+                             ("RTWP (site)", "rtwp_h", "rtwp_max", ".1f")):
+        if not pd.isna(row.get(h, np.nan)):
+            unit = " dBm" if h == "rtwp_h" else ""
+            out.append((name, f"{row[mx]:{fmt}}{unit}", row[h] > 0,
+                        f"{int(row[h])} h with an issue"))
+    from rfopt.geo.coverage import poor_rsrp_line
     if not pd.isna(row.get("rsrp")):
-        rule = A.rule_of(A.RSRP_RULE)
-        line = rule.warning if rule is not None else -105.0
-        note = ("" if pd.isna(row.get("rsrp_m")) else
-                f"{row['rsrp_m']:.0f} m away · {int(row['mr']):,} MRs")
-        out.append(("RSRP at the subscriber", f"{row['rsrp']:g} dBm", row["rsrp"] <= line, note))
+        note = "" if pd.isna(row.get("mr")) else f"grid cell · {int(row['mr']):,} MRs"
+        out.append(("RSRP at the subscriber", f"{row['rsrp']:g} dBm",
+                    row["rsrp"] <= poor_rsrp_line(), note))
+    elif bool(row.get("no_grid", False)):
+        out.append(("RSRP at the subscriber", "no grid", True,
+                    "no RSRP grid at the user location"))
     return out
 
 

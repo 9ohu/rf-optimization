@@ -59,12 +59,15 @@ def signature() -> tuple:
     return tuple(sorted((k, v.get("lat"), v.get("lon")) for k, v in load().items()))
 
 
-@st.cache_resource(show_spinner=False, max_entries=2)
-def _sectors(kmz_path: str, kmz_sha: str, on_air: frozenset) -> pd.DataFrame:
+@st.cache_resource(show_spinner=False, max_entries=4)
+def _sectors(kmz_path: str, kmz_sha: str, on_air: frozenset, only_on_air: bool = True
+             ) -> pd.DataFrame:
     from rfopt.ingest.kmz_sites import load_kmz_sites
     from rfopt.ingest.site_status import apply_ep_status
     s = apply_ep_status(load_kmz_sites(kmz_path, region=None).sectors, on_air)
-    s = s[s["air"].astype(str).eq("onair")].copy()
+    if only_on_air:
+        s = s[s["air"].astype(str).eq("onair")]
+    s = s.copy()
     for c in ("latitude", "longitude", "azimuth_deg"):
         s[c] = pd.to_numeric(s[c], errors="coerce")
     s["site_id"] = s["site_id"].astype(str).str.upper()
@@ -83,3 +86,13 @@ def serving_sectors() -> pd.DataFrame:
         return pd.DataFrame(columns=["sector_id", "site_id", "latitude", "longitude",
                                      "azimuth_deg"])
     return _sectors(str(f.path), f.sha1, R.ep_on_air())
+
+
+def site_sectors() -> pd.DataFrame:
+    """Every sector of the site KMZ, on air or not — where a ticket's own site
+    is looked up for the sector facing its user location."""
+    f = R.kmz_file()
+    if f is None:
+        return pd.DataFrame(columns=["sector_id", "site_id", "latitude", "longitude",
+                                     "azimuth_deg"])
+    return _sectors(str(f.path), f.sha1, R.ep_on_air(), False)

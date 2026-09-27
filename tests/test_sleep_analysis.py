@@ -162,7 +162,9 @@ def test_the_plan_site_is_carried_only_where_the_ticket_is_about_one():
     pop = A.sleep_population(_history())
     # column BP names a site on every row; only the planned ticket shows one
     assert list(pop["plan_site"]) == ["", "", "BAS9999", "", ""]
-    assert list(pop["check"]) == ["utilization", "utilization", "planned", "interference",
+    # a planned-site ticket is a coverage case unless its comment / RF Analysis
+    # says load: RSRP decides it, never the planned site's status
+    assert list(pop["check"]) == ["utilization", "utilization", "coverage", "interference",
                                   "coverage"]
 
 
@@ -252,24 +254,29 @@ def test_interference_is_judged_on_the_operators_own_line():
 def test_coverage_is_judged_where_the_subscriber_was():
     weak = A.Point(rsrp=-113.0, mr=120, metres=3.0)
     fine = A.Point(rsrp=-92.0, mr=400, metres=8.0)
-    bad, text = A.judge("coverage", "BAS0001-1", None, weak)
+    bad, text = A.judge("coverage", "BAS0001-1", None, weak, located=True, coverage=True)
     assert bad == A.NOT_SOLVE and text == (
         "The serving sector is BAS0001-1, with a distance of N/A from the user location. "
         "The area is still experiencing weak coverage, with an RSRP measurement of -113.0 dBm.")
-    good, _ = A.judge("coverage", "BAS0001-1", None, fine)
+    good, _ = A.judge("coverage", "BAS0001-1", None, fine, located=True, coverage=True)
     assert good == A.SOLVE
+    # a location with no RSRP grid under it: poor coverage
+    none, text = A.judge("coverage", "BAS0001-1", None, None, located=True, coverage=True)
+    assert none == A.NOT_SOLVE and "no RSRP grid at the user location" in text
+    # no user location: RSRP is ignored
+    assert A.judge("coverage", "BAS0001-1", None, fine)[0] == A.NOT_CHECKED
 
 
-def test_a_planned_site_not_on_air_is_not_solved_whatever_the_kpi_says():
-    verdict, text = A.judge("planned", "BAS0001-3", _evidence()[("BAS0001", 3.0)], None,
-                            A.NOT_ON_AIR, "BAS9999")
-    assert verdict == A.NOT_SOLVE and text.startswith(
-        "The planned site BAS9999 is still not on air. The serving sector is BAS0001-3")
-    # on air, the check carries on at the subscriber's point
-    on, text = A.judge("planned", "BAS0001-3", None, A.Point(-92.0, 400, 8.0), A.ON_AIR,
-                       "BAS9999")
-    assert on == A.SOLVE and "BAS9999 is now on air" in text
-    assert text.endswith("The current RSRP measurement is -92.0 dBm.")
+def test_a_planned_site_is_judged_on_rsrp_never_on_its_status():
+    good = A.Point(-92.0, 400, 8.0)
+    weak = A.Point(-112.0, 400, 8.0)
+    for plan in (A.NOT_ON_AIR, A.ON_AIR, ""):
+        ok, text = A.judge("planned", "BAS0001-3", None, good, plan, "BAS9999",
+                           located=True, coverage=True)
+        assert ok == A.SOLVE and "not on air" not in text
+        bad, _ = A.judge("planned", "BAS0001-3", None, weak, plan, "BAS9999",
+                         located=True, coverage=True)
+        assert bad == A.NOT_SOLVE
 
 
 def test_flow_control_is_judged_on_the_counter_of_the_site():
@@ -290,7 +297,8 @@ def test_the_description_is_written_for_the_verdict_not_the_closure_code():
     assert "The sector is no longer experiencing high PRB utilization" in text
     ok, text = A.judge("interference", "BAS0001-3", ev[("BAS0001", 3.0)], None)
     assert ok == A.SOLVE and "no longer experiencing interference" in text
-    ok, text = A.judge("coverage", "BAS0001-1", None, A.Point(-92.0, 400, 8.0))
+    ok, text = A.judge("coverage", "BAS0001-1", None, A.Point(-92.0, 400, 8.0),
+                       located=True, coverage=True)
     assert ok == A.SOLVE and text.endswith(
         "The area is no longer experiencing weak coverage, with an RSRP measurement of "
         "-92.0 dBm.")
@@ -301,10 +309,9 @@ def test_the_description_is_written_for_the_verdict_not_the_closure_code():
         verdict, text = A.judge(check, "BAS0001-9", None, None)
         assert verdict == A.NOT_CHECKED and "could not be verified" in text
         assert "still" not in text and "no longer" not in text
-    # a planned site with no status to read is not called "still not on air"
-    verdict, text = A.judge("planned", "BAS0001-3", None, None, "", "BAS9999")
-    assert verdict == A.NOT_CHECKED and text.startswith(
-        "The status of the planned site BAS9999 could not be verified.")
+    # a planned site without a user location is not decided by its status
+    verdict, text = A.judge("planned", "BAS0001-3", None, None, A.NOT_ON_AIR, "BAS9999")
+    assert verdict == A.NOT_CHECKED and "could not be verified" in text
 
 
 def test_nothing_to_read_is_not_checked_rather_than_solved():
@@ -419,7 +426,7 @@ def test_the_table_carries_the_columns_the_team_asked_for():
         "Ticket ID", "User", "Site ID", "Cite", "Serving Sector", "Plan Site", "RF Analysis",
         "Closure Code", "Log", "Lat", "Diagnostic Submit Time", "Create Time",
         "Expected Resolution Date", "Wake After", "Problem Time", "Status", "Distance",
-        "Site Issue", "Plan Site Status", "RSRP", "Description"]
+        "Site Issue", "Issue Hours", "Plan Site Status", "RSRP", "Description"]
     kinds = dict((c[0], c[2]) for c in S.COLUMNS)
     assert kinds["verdict"] == "verdict" and kinds["plan_status"] == "air"
     # Status is column ER of the export, which the history reads as `status`,

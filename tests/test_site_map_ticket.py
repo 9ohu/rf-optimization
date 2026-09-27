@@ -90,8 +90,10 @@ def test_the_user_location_is_judged_on_its_own_sector_not_the_sites_worst():
 
     # stage 2: the user is on sector 2 — its own KPIs are normal
     lat, lon = _at(120, 300)
-    r = RL.reanalyse(lat, lon, pt, _sectors(), sec_tracks, site_tracks, 2.0)
+    r = RL.reanalyse(lat, lon, pt, _sectors(), sec_tracks, site_tracks, 2.0,
+                     site_id="BAS0001")
     assert r.sector_id == "BAS0001-S2" and r.analysis.classification == NO_ISSUE
+    assert r.how == RL.TICKET
     assert r.description.startswith("The serving sector is BAS0001-S2, with a distance of "
                                      "300 m from the user location and an azimuth difference")
     assert r.description.endswith("The RSRP measurement at the user location is N/A.")
@@ -99,7 +101,8 @@ def test_the_user_location_is_judged_on_its_own_sector_not_the_sites_worst():
 
     # on sector 1 the congestion is still its own
     lat, lon = _at(0, 250)
-    r = RL.reanalyse(lat, lon, pt, _sectors(), sec_tracks, site_tracks, 2.0)
+    r = RL.reanalyse(lat, lon, pt, _sectors(), sec_tracks, site_tracks, 2.0,
+                     site_id="BAS0001")
     assert r.sector_id == "BAS0001-S1" and r.analysis.classification == TECHNICAL
 
 
@@ -171,8 +174,12 @@ def test_a_ticket_searched_on_the_map_and_re_analysed_at_the_user(tmp_path, monk
     assert not at.exception, at.exception
     text = " ".join(_html(at))
     assert "CC-1" in text and "IM1" in text
-    assert "1 · General analysis (site level)" in text and "BAS0001-S1 (worst cell)" in text
-    assert at.session_state["sm_sel_sector"] == "BAS0001-S1"
+    # no user location: the site's cells are analysed, no serving sector is picked
+    assert "1 · General analysis (site level)" in text
+    assert "no user location: the site&#x27;s cells are analysed" in text or \
+        "no user location: the site's cells are analysed" in text
+    assert "(worst cell)" not in text
+    assert at.session_state.get("sm_sel_sector") != "BAS0001-S1"
     assert len(at.get("plotly_chart")) == 1                # the main issue KPI only
     assert at.button(key="sm_loc_go").disabled
 
@@ -238,10 +245,11 @@ def test_the_rsrp_row_reads_every_area_field_optionally():
 
 
 @pytest.mark.parametrize("approved", [False, True], ids=["no-user-location", "approved"])
-@pytest.mark.parametrize("area", [None, FULL_AREA, {"median": -95.2, "grids": 12}],
-                         ids=["no-coverage", "with-radius", "without-radius"])
-def test_the_site_map_renders_the_rsrp_panel_in_every_case(tmp_path, monkeypatch,
-                                                            put_resource, area, approved):
+@pytest.mark.parametrize("grid", ["none", "value", "no-grid-here"])
+def test_the_site_map_rsrp_panel_reads_only_the_user_location(tmp_path, monkeypatch,
+                                                              put_resource, grid, approved):
+    """RSRP only at an approved user location, straight from the grid cell
+    there; no site-area RSRP; no grid under the point is a Coverage Issue."""
     monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
     AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
     import _complaints as C
@@ -258,13 +266,13 @@ def test_the_site_map_renders_the_rsrp_panel_in_every_case(tmp_path, monkeypatch
     real = C.load_workspace
 
     def with_coverage(*a, **k):
-        # the site-area record as the coverage grid would give it, and the RSRP
-        # measured at the approved point
         ctx = real(*a, **k)
-        ctx.rsrp = {"BAS0001": dict(area)} if area is not None else {}
-        ctx.cov_kept = {"grid": object()} if area is not None else {}
+        ctx.cov_kept = {"grid": object()} if grid != "none" else {}
         for r in ctx.re.values():
-            r.rsrp = -98.7 if area is not None else None
+            r.rsrp = -98.7 if grid == "value" else None
+            r.no_grid = r.coverage_issue = grid == "no-grid-here"
+            r.rsrp_note = ("grid cell of 50 m, 12 MRs" if grid == "value"
+                           else "no RSRP grid at the user location")
         return ctx
 
     monkeypatch.setattr(C, "load_workspace", with_coverage)
@@ -272,19 +280,17 @@ def test_the_site_map_renders_the_rsrp_panel_in_every_case(tmp_path, monkeypatch
     at.session_state["sm_tid"] = "CC-1"
     at.run()
     assert not at.exception, at.exception
-    rsrp = next(b for b in _html(at) if "<span>Site area RSRP</span>" in b)
-    for part in ("Site area RSRP", "Customer location", "Sector / distance", 'class="ca-rsc"',
-                 'class="ca-evs"'):
+    rsrp = next(b for b in _html(at) if "<span>Customer location</span>" in b)
+    assert "Site area RSRP" not in rsrp
+    for part in ("Customer location", "Sector / distance", 'class="ca-rsc"', 'class="ca-evs"'):
         assert part in rsrp, part
-    if area is None:
-        assert "<span>Site area RSRP</span><b>Not available</b>" in rsrp and "No data" in rsrp
-    elif "radius_m" in area:
-        assert "-85.4 dBm (≤500 m, MR-weighted median)" in rsrp
+    if not approved:
+        assert "no approved user location" in rsrp and "-98.7" not in rsrp
+        return
+    assert "<span>Sector / distance</span><b>BAS0001-S2 · 300 m</b>" in rsrp
+    if grid == "value":
+        assert "-98.7 dBm" in rsrp and "user location" in rsrp
+    elif grid == "no-grid-here":
+        assert "Poor coverage · Coverage Issue" in rsrp
     else:
-        assert "-95.2 dBm (MR-weighted median)" in rsrp
-    if approved:
-        assert "<span>Sector / distance</span><b>BAS0001-S2 · 300 m</b>" in rsrp
-        if area is not None:
-            assert "-98.7 dBm" in rsrp and "user location" in rsrp
-    else:
-        assert "no approved user location" in rsrp
+        assert "No coverage grid in Coverage Data" in rsrp

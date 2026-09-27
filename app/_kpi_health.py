@@ -1,18 +1,21 @@
-"""Site health for the KPI Analysis page, judged the way the app already judges.
+"""Site health for the KPI Analysis page — two levels, judged hour by hour.
 
-Presentation model only. Nothing here defines a KPI rule:
+* **Cell level.** Each object is analysed on its own: a cell where the export
+  measures cells, the site (NodeB / eNodeB) where it measures sites — never
+  converted from one to the other (`load_hourly_raw`'s `level`). DL flow
+  control is the exception the rules name: it is judged per **site** and hour
+  (the cells' drops of the hour added up).
+* **Every hourly value is judged on its own** against its line
+  (`rfopt.kpi.thresholds.hourly_severity`; a TDD cell's UL interference on the
+  TDD line). An object has an Issue when any hour breaches; its Worst Hour and
+  Worst Value are its worst hour. The window average is kept for display only
+  — it never decides an issue.
+* **Site level.** A site is judged on all of its cells: its state is the worst
+  of them, with how many cells and how many cell × KPI checks breach.
 
-* a sector's value (a 3G NodeB's, or a 4G cell that names no sector) is the
-  KPI over the export window, aggregated with `agg_how` and grouped exactly as
-  the Sites map groups it (`views/site_map._sector_kpis`);
-* a KPI is judged on the operator's thresholds through `_kpi_map.threshold_rule`
-  (the Sites map's rule) or, for the indicators Complaint Analysis reads — 3G
-  RTWP, 3G DL flow-control drops (a 24 h total), 4G S1 failures — through
-  `rfopt.complaints.noc.indicator_columns`;
-* `rfopt.complaints.correlate.severity` turns a value into normal / warning /
-  critical, and a site takes its worst object's state, like a tower on the map.
-
-S1 failures have no threshold: they are counted and shown, never an issue.
+Only a line with a documented source judges (`_kpi_map.threshold_rule`,
+`rfopt.complaints.noc.indicator_columns`; config/THRESHOLD_SOURCES.md). S1
+failures have no threshold: they are counted and shown, never an issue.
 """
 
 from __future__ import annotations
@@ -23,8 +26,8 @@ import numpy as np
 import pandas as pd
 
 from _kpi_map import canonical_name, threshold_rule
-from rfopt.complaints.correlate import severity
 from rfopt.complaints.noc import fmt, indicator_columns
+from rfopt.kpi.thresholds import hourly_severity
 from rfopt.kpi.trends import agg_how
 
 STATE = {2: "Critical", 1: "Warning", 0: "Normal", -1: "No data"}
@@ -36,15 +39,21 @@ NAMES = {"AVA": "Availability", "PRB": "PRB utilisation", "INTER": "UL interfere
 TDD = "CELL_TDD"
 
 _KEY = {"cell_avail_pct": "AVA", "dl_prb_util": "PRB", "ul_prb_util": "PRB",
-        "ul_rssi_dbm": "INTER", "call_setup_sr": "CSSR", "ipmm_rtt_ms": "IPL"}
+        "ul_rssi_dbm": "INTER", "call_setup_sr": "CSSR", "ipmm_rtt_ms": "IPL",
+        "ul_rtwp_dbm": "RTWP"}
 _NAME = {"cell_avail_pct": "Availability", "dl_prb_util": "DL PRB", "ul_prb_util": "UL PRB",
          "ul_rssi_dbm": "UL interference", "call_setup_sr": "CSSR",
-         "ipmm_rtt_ms": "IP path RTT"}
+         "ipmm_rtt_ms": "IP path RTT", "ul_rtwp_dbm": "RTWP"}
 _UNIT = {"cell_avail_pct": "%", "dl_prb_util": "%", "ul_prb_util": "%",
-         "ul_rssi_dbm": " dBm", "call_setup_sr": "%", "ipmm_rtt_ms": " ms"}
+         "ul_rssi_dbm": " dBm", "call_setup_sr": "%", "ipmm_rtt_ms": " ms",
+         "ul_rtwp_dbm": " dBm"}
+# the main KPIs: they always lead (4G High PRB / Availability / Interference,
+# 3G Flow Control / Availability / RTWP)
+MAIN = ("PRB", "AVA", "INTER", "FLOW", "RTWP")
 
 COLUMNS = ["site_id", "object_id", "object_type", "kind", "key", "label", "column", "unit",
-           "judged", "low_is_bad", "value", "sev", "state", "threshold", "peak", "peak_time"]
+           "judged", "low_is_bad", "value", "sev", "state", "threshold", "peak", "peak_time",
+           "hours", "issue_hours"]
 
 
 def value_text(value, unit: str = "", judged: bool = True) -> str:
@@ -62,17 +71,26 @@ class Judged:
     label: str          # "4G DL PRB"
     kind: str           # 4G / 3G
     rule: object        # the threshold rule; None for a count that is never judged
-    how: str            # window: over the export window · day_sum: worst 24 h total · count
+    how: str            # window: every hour of the object · site_hour: every hour of the site · count
     unit: str
 
     @property
     def threshold(self) -> str:
         if self.rule is None:
             return "no threshold (count)"
-        op = "<" if self.rule.direction == "up" else ">"
-        per = " per 24 h" if self.how == "day_sum" else ""
-        return (f"⚠ {op} {self.rule.warning:,g}{self.unit} · "
-                f"● {op} {self.rule.critical:,g}{self.unit}{per}")
+        return threshold_text(self.rule, self.unit, site=self.how == "site_hour")
+
+
+def threshold_text(rule, unit: str = "", *, site: bool = False) -> str:
+    """The line as the pages quote it: one Issue line, judged per hour."""
+    op = "<" if rule.direction == "up" else ">"
+    if rule.warning == rule.critical:
+        text = f"Issue {op} {rule.critical:,g}{unit} per hour"
+    else:
+        text = f"⚠ {op} {rule.warning:,g}{unit} · ● {op} {rule.critical:,g}{unit} per hour"
+    if rule.kpi == "ul_rssi_dbm":
+        text += " (FDD; TDD > -100 dBm)"
+    return text + (" at site level" if site else "")
 
 
 def judged_columns(kpis, kind: str) -> list[Judged]:
@@ -85,63 +103,90 @@ def judged_columns(kpis, kind: str) -> list[Judged]:
         canon = canonical_name(k) or ""
         out.append(Judged(k, _KEY.get(canon, k), f"{kind} {_NAME.get(canon, k)}", kind,
                           rule, "window", _UNIT.get(canon, "")))
+    have = {j.key for j in out}
     for col, d, rule in indicator_columns(kpis, kind):
+        if d.key in have:               # RTWP is judged through its threshold already
+            continue
         out.append(Judged(col, d.key, d.label, kind, rule,
                           "window" if d.how == "worst" else d.how, d.unit))
-    return out
+    # the main KPIs lead
+    return sorted(out, key=lambda j: (j.key not in MAIN,))
 
 
 def _empty() -> pd.DataFrame:
     return pd.DataFrame(columns=COLUMNS)
 
 
+def object_ids(d: pd.DataFrame) -> np.ndarray:
+    """The object each row is analysed as: its cell where the export measures
+    cells, its site where it measures sites (a NodeB / eNodeB)."""
+    site = d["site_id"].astype(str).to_numpy()
+    if "level" not in d.columns:
+        return d["object"].astype(str).to_numpy()
+    return np.where(d["level"].astype(str).eq("site").to_numpy(), site,
+                    d["object"].astype(str).to_numpy())
+
+
 def object_values(df: pd.DataFrame, j: Judged) -> pd.DataFrame:
-    """One row per object for one KPI: its window value, state and worst hour."""
+    """One row per object for one KPI: every hour judged on its own — its state
+    (the worst hour's), how many hours breach, its Worst Hour and Worst Value,
+    and the window average (display only)."""
     col = j.column
     if df is None or df.empty or col not in df.columns:
         return _empty()
-    d = df.loc[df[col].notna() & df["site_id"].notna(), ["datetime", "site_id", "sector_id", col]]
+    extra = [c for c in ("object", "level", "duplex") if c in df.columns]
+    d = df.loc[df[col].notna() & df["site_id"].notna(), ["datetime", "site_id", col] + extra]
     if d.empty:
         return _empty()
-    site = d["site_id"].astype(str)
-    sector = d["sector_id"].astype(str)
-    no_sector = sector.str.endswith("-S0")
-    d = d.assign(site_id=site, object_id=np.where(no_sector, site, sector))
+    d = d.assign(site_id=d["site_id"].astype(str))
     up = j.rule is not None and j.rule.direction == "up"
-
-    if j.how == "day_sum":
-        hourly = (d.groupby(["object_id", "datetime"], observed=True)[col].sum()
-                  .reset_index().sort_values(["object_id", "datetime"]))
-        rolled = (hourly.set_index("datetime").groupby("object_id")[col]
-                  .rolling("24h").sum().reset_index())
-        best = rolled.loc[rolled.groupby("object_id")[col].idxmax()].set_index("object_id")
-        value, peak, peak_time = best[col], best[col], best["datetime"]
+    if j.how == "site_hour":            # flow control: the site's drops of each hour
+        d = d.assign(object_id=d["site_id"].to_numpy())
+        how = "sum"
     else:
+        d = d.assign(object_id=object_ids(d))
         how = "sum" if j.how == "count" else agg_how(col)
-        value = d.groupby("object_id", observed=True)[col].agg(how)
-        hourly = d.groupby(["object_id", "datetime"], observed=True)[col].agg(how).reset_index()
-        g = hourly.groupby("object_id")[col]
-        best = hourly.loc[g.idxmin() if up else g.idxmax()].set_index("object_id")
-        peak, peak_time = best[col], best["datetime"]
-
-    ids = value.index.astype(str)
-    sites = d.drop_duplicates("object_id").set_index("object_id")["site_id"].reindex(ids)
-    vals = value.to_numpy(dtype=float)
+    keys = ["object_id", "datetime"]
+    hourly = d.groupby(keys, observed=True, sort=True).agg(
+        site_id=("site_id", "first"), v=(col, how),
+        **({"duplex": ("duplex", "first")} if "duplex" in d.columns else {})).reset_index()
     if j.rule is None:
-        sev = (vals > 0).astype(int)
+        hourly["sev"] = (hourly["v"] > 0).astype(int)
+    else:
+        hourly["sev"] = hourly_severity(j.rule, hourly["v"].to_numpy(),
+                                        hourly["duplex"] if "duplex" in hourly.columns else None)
+    g = hourly.groupby("object_id", sort=True)
+    if j.how == "count":
+        value = g["v"].sum()
+    else:                               # the window average: display only
+        value = g["v"].mean()
+    # the worst hour: the most severe, then the most extreme in the bad direction
+    rank = hourly["v"] if up else -hourly["v"]
+    worst = (hourly.assign(_r=rank).sort_values(["object_id", "sev", "_r"],
+                                                ascending=[True, False, True], kind="stable")
+             .drop_duplicates("object_id").set_index("object_id"))
+    ids = value.index.astype(str)
+    sites = worst["site_id"].reindex(value.index)
+    sev = g["sev"].max().reindex(value.index).to_numpy(dtype=int)
+    if j.rule is None:
         state = np.where(sev > 0, "Detected", "Normal")
     else:
-        sev = np.array([severity(j.rule, v) for v in vals], dtype=int)
-        state = np.array([STATE[s] for s in sev], dtype=object)
-    is_site = ids == sites.to_numpy()
+        state = np.array([STATE[x] for x in sev], dtype=object)
+    level = (d.drop_duplicates("object_id").set_index("object_id")["level"].reindex(value.index)
+             if "level" in d.columns else pd.Series("cell", index=value.index))
+    is_site = (ids == sites.astype(str).to_numpy()) | level.eq("site").to_numpy()
     return pd.DataFrame({
-        "site_id": sites.to_numpy(), "object_id": ids,
-        "object_type": np.where(is_site, "NodeB" if j.kind == "3G" else "Site", "Sector"),
+        "site_id": sites.astype(str).to_numpy(), "object_id": ids,
+        "object_type": np.where(is_site, "NodeB" if j.kind == "3G" else "Site", "Cell"),
         "kind": j.kind, "key": j.key, "label": j.label, "column": col, "unit": j.unit,
-        "judged": j.rule is not None, "low_is_bad": up, "value": vals, "sev": sev,
-        "state": state, "threshold": j.threshold,
-        "peak": peak.reindex(value.index).to_numpy(dtype=float),
-        "peak_time": pd.to_datetime(peak_time.reindex(value.index).to_numpy()),
+        "judged": j.rule is not None, "low_is_bad": up,
+        "value": value.to_numpy(dtype=float), "sev": sev, "state": state,
+        "threshold": j.threshold,
+        "peak": worst["v"].reindex(value.index).to_numpy(dtype=float),
+        "peak_time": pd.to_datetime(worst["datetime"].reindex(value.index).to_numpy()),
+        "hours": g.size().reindex(value.index).to_numpy(dtype=int),
+        "issue_hours": g["sev"].apply(lambda s: int((s > 0).sum()))
+        .reindex(value.index).to_numpy(dtype=int),
     })
 
 
@@ -206,13 +251,17 @@ def in_scope(frame: pd.DataFrame | None, scope: set | None):
 
 
 def site_status(objects: pd.DataFrame, sites) -> pd.DataFrame:
-    """Per site: its worst judged state, the KPI behind it, how many checks breach."""
+    """Per site, judged on all of its cells: its worst state and the KPI behind
+    it (a main KPI first), how many cell × KPI checks breach, and how many of
+    its cells have an issue out of how many were measured."""
     out = pd.DataFrame(index=pd.Index(sorted(sites), name="site_id"))
     j = objects[objects["judged"].astype(bool)] if len(objects) else objects
     if j.empty:
         out["sev"], out["label"], out["issues"], out["bad_kpis"] = -1, "", 0, ""
+        out["cells"], out["cells_issue"] = 0, 0
     else:
-        worst = (j.sort_values("sev", ascending=False, kind="stable")
+        worst = (j.assign(_main=~j["key"].isin(MAIN))
+                 .sort_values(["sev", "_main"], ascending=[False, True], kind="stable")
                  .drop_duplicates("site_id").set_index("site_id"))
         bad = j[j["sev"] > 0]
         out = out.join(worst[["sev", "label", "key", "object_id"]])
@@ -222,6 +271,10 @@ def site_status(objects: pd.DataFrame, sites) -> pd.DataFrame:
         out["bad_kpis"] = (bad.groupby("site_id")["label"]
                            .agg(lambda s: ", ".join(sorted(set(s))))
                            .reindex(out.index).fillna(""))
+        out["cells"] = (j.groupby("site_id")["object_id"].nunique()
+                        .reindex(out.index).fillna(0).astype(int))
+        out["cells_issue"] = (bad.groupby("site_id")["object_id"].nunique()
+                              .reindex(out.index).fillna(0).astype(int))
     out["state"] = out["sev"].map(STATE)
     return out
 
@@ -259,11 +312,11 @@ def problem_ranking(objects: pd.DataFrame) -> pd.DataFrame:
 
 
 def issue_order(frame: pd.DataFrame) -> pd.DataFrame:
-    """Worst first: critical before warning, then per KPI the worst value in the
-    threshold's own direction — the Sites map's "worst sectors" order."""
+    """Worst first: an issue before normal, then per KPI the worst hour's value
+    in the threshold's own direction."""
     if frame.empty:
         return frame
-    key = np.where(frame["low_is_bad"].astype(bool), frame["value"], -frame["value"])
+    key = np.where(frame["low_is_bad"].astype(bool), frame["peak"], -frame["peak"])
     return (frame.assign(_k=key)
             .sort_values(["sev", "label", "_k"], ascending=[False, True, True], kind="stable")
             .drop(columns="_k"))
@@ -284,12 +337,14 @@ def site_tiles(objects: pd.DataFrame, site_id: str) -> tuple[list[dict], list[di
         word = r["state"]
         if r["judged"] and sev == 1:
             word = "Low" if r["low_is_bad"] else "High"
-        return {"key": key, "name": r["label"], "value": value_text(r["value"], r["unit"], r["judged"]),
+        # a judged KPI shows its worst hour — the hour that decided its state
+        shown = r["peak"] if r["judged"] else r["value"]
+        return {"key": key, "name": r["label"], "value": value_text(shown, r["unit"], r["judged"]),
                 "sev": sev, "state": word, "judged": bool(r["judged"]),
                 "threshold": r["threshold"], "object": r["object_id"],
                 "peak_time": r["peak_time"], "n": int(len(f)),
                 "bad": int((f["sev"] > 0).sum()),
-                "note": f"{int((f['sev'] > 0).sum())} of {len(f)} objects above threshold"
+                "note": f"{int((f['sev'] > 0).sum())} of {len(f)} objects with an issue hour"
                 if r["judged"] else f"total over the window on {r['object_id']}"}
 
     extra = [k for k in rows["key"].unique() if k not in PRIMARY + SECONDARY]
@@ -298,29 +353,36 @@ def site_tiles(objects: pd.DataFrame, site_id: str) -> tuple[list[dict], list[di
 
 
 def site_hours(frames, site_id: str) -> pd.DataFrame:
-    """Hour by hour, the site's worst object on every window-judged KPI, and its state."""
+    """Hour by hour, on every hourly-judged KPI of the site: the most severe of
+    its objects that hour (then the most extreme value), and its state."""
     rows = []
-    for _kind, df, judged in frames:
+    for kind, df, judged in frames:
         if df is None or df.empty:
             continue
         d = df[df["site_id"].astype(str) == site_id]
         if d.empty:
             continue
         for j in judged:
-            if j.rule is None or j.how != "window" or j.column not in d.columns:
+            if j.rule is None or j.how == "count" or j.column not in d.columns:
+                continue
+            o = object_values(d, j)
+            if o.empty:
                 continue
             x = d[d[j.column].notna()]
-            if x.empty:
-                continue
-            sector = x["sector_id"].astype(str)
-            x = x.assign(object_id=np.where(sector.str.endswith("-S0"), site_id, sector))
-            h = (x.groupby(["datetime", "object_id"], observed=True)[j.column]
-                 .agg(agg_how(j.column)).reset_index())
-            g = h.groupby("datetime")[j.column]
-            w = h.loc[g.idxmin() if j.rule.direction == "up" else g.idxmax()]
-            for t, oid, v in zip(w["datetime"], w["object_id"], w[j.column]):
-                rows.append((t, j.key, j.label, oid, float(v), j.unit,
-                             severity(j.rule, v), j.rule.direction == "up", j.threshold))
+            ids = x["site_id"].astype(str).to_numpy() if j.how == "site_hour" else object_ids(x)
+            h = (x.assign(object_id=ids)
+                 .groupby(["datetime", "object_id"], observed=True)
+                 .agg(v=(j.column, "sum" if j.how == "site_hour" else agg_how(j.column)),
+                      **({"duplex": ("duplex", "first")} if "duplex" in x.columns else {}))
+                 .reset_index())
+            h["sev"] = hourly_severity(j.rule, h["v"].to_numpy(),
+                                       h["duplex"] if "duplex" in h.columns else None)
+            up = j.rule.direction == "up"
+            h = (h.assign(_r=h["v"] if up else -h["v"])
+                 .sort_values(["datetime", "sev", "_r"], ascending=[True, False, True],
+                              kind="stable").drop_duplicates("datetime"))
+            for t, oid, v, sv in zip(h["datetime"], h["object_id"], h["v"], h["sev"]):
+                rows.append((t, j.key, j.label, oid, float(v), j.unit, int(sv), up, j.threshold))
     return pd.DataFrame(rows, columns=["hour", "key", "label", "object_id", "value", "unit",
                                        "sev", "low", "threshold"]).sort_values(
         ["hour", "label"], kind="stable")

@@ -104,8 +104,9 @@ def test_sniff_shrugs_at_a_file_that_is_not_a_kpi_export():
 def test_raw_loader_reads_only_the_asked_for_columns():
     df = load_hourly_raw(_zip(_4G, "4g.zip"), ["4G Data Volume (GB)"])
     assert set(df.columns) == {"datetime", "object", "site_id", "sector_id",
-                               "prefix", "duplex", "parent",
+                               "prefix", "duplex", "parent", "level",
                                "4G Data Volume (GB)"}
+    assert set(df["level"]) == {"cell"}                   # the export measures cells
     # the sector the cell sits on, so the map can colour its beam
     assert set(df["sector_id"]) == {"BAS3128-S1", "SAM5849-S1"}
     assert "HW_DL PRB Avg Utilization(%)" not in df.columns

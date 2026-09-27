@@ -1,4 +1,37 @@
-# Project status / handoff  (updated 2026-09-26)
+# Project status / handoff  (updated 2026-09-27)
+
+## 2026-09-27 (cont.) - Analysis logic: the R5 team's rules (logic only, UI unchanged)
+
+Thresholds (`config/thresholds_*.yaml`, `config/THRESHOLD_SOURCES.md`): a rule
+is judged only with a `source` (`ThresholdRule.judged`). Main KPIs, warning =
+critical (one Issue line): PRB > 80 %, availability < 99 %, FDD UL interference
+worse than -105 dBm, TDD worse than -100 dBm (`ul_rssi_tdd_dbm`, CELL_TDD
+cells), 3G RTWP worse than -90 dBm, flow control > 100,000 per site-hour. Every
+other KPI: no confirmed Huawei source -> shown, never judged. The RSRP poor
+line (-105) is the existing value, not confirmed.
+
+- **Hourly, never averages**: `thresholds.hourly_severity` judges every hourly
+  value on its own. Exports carry `level` (cell / site).
+- **KPI Analysis**: per cell (worst hour + value) and per site from all its
+  cells (`_kpi_health.object_values`, `site_status` cells / cells_issue);
+  flow control per site-hour. Main KPIs lead.
+- **Delay tickets** (`correlate.analyse_ticket`): all cells of the site, the
+  KpiTrack keeps every cell-hour; resolution reads every hour after the
+  window to the end of the data. No-location tickets: no RSRP, no serving
+  sector, no neighbours; Evidence status column and RSRP row removed; charts
+  one trace per cell.
+- **User location** (`relocate.reanalyse`): the ticket's Site ID -> its sector
+  facing the user (`facing_sector`); only an empty / 0 Site ID uses the best
+  server equation. RSRP = the grid cell at the point (`coverage.grid_cell_rsrp`,
+  map lattice), no grid = Poor coverage / Coverage Issue. `NEIGHBOURS = 3`
+  sectors of other sites, each on all of its cells (context, not verdict).
+- **Sleep** (`sleep/analysis.py`): reason = Diagnostic Comment > RF Analysis >
+  Closure Code (`reason_of`); "not technical" comment -> Not Technical; DT ->
+  coverage; planned -> coverage unless the comment / RF says load. Coverage:
+  RSRP decides (needs a location; no grid under it = Not Solve); Plan Site
+  Status is shown, never decides. Full KPI period, per sector, per hour; one
+  new column **Issue Hours** after Site Issue.
+- Tests: `tests/test_analysis_rules.py` (every path) + updated suites.
 
 ## 2026-09-27 - Startup: a comet brings the day, a dial for the four steps
 

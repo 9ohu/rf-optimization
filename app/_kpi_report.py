@@ -134,9 +134,11 @@ def kpi_choices(ws) -> list[Choice]:
 
 
 def _user_rule(rule, threshold: float):
-    """The KPI's rule with the user's threshold: its direction stays its own."""
+    """The KPI's rule with the user's threshold: its direction stays its own,
+    and the user's line holds for every cell (TDD included)."""
     try:
-        return dataclasses.replace(rule, warning=float(threshold), critical=float(threshold))
+        return dataclasses.replace(rule, kpi=f"{rule.kpi}@user", warning=float(threshold),
+                                   critical=float(threshold))
     except TypeError:
         import copy
         r = copy.copy(rule)
@@ -201,10 +203,14 @@ def _build(key: tuple, _ws, _ch: Choice, gov: str, sds: tuple, site: str, period
     df = _frame(_ws, ch, period)
     j = ch.judged
     rule = _user_rule(j.rule, threshold)
-    judged = dataclasses.replace(j, rule=rule, label=ch.label)
+    # the report reads one row per cell (the 3G export's NodeB): each object is
+    # judged hour by hour under its own name — a NodeB is its site already
+    judged = dataclasses.replace(j, rule=rule, label=ch.label,
+                                 how="window" if j.how == "site_hour" else j.how)
     low = rule.direction == "up"
     # one row per cell (the 4G export's own cell, the 3G export's NodeB)
-    cell_df = df.assign(sector_id=df["object"].astype(str)) if len(df) else df
+    cell_df = (df.assign(sector_id=df["object"].astype(str), level="cell") if len(df)
+               else df)
     objs = object_values(cell_df, judged) if len(df) else pd.DataFrame(
         columns=["site_id", "object_id", "value", "sev", "peak", "peak_time"])
     # a sudden spike against the cell's own normal hours, from the KPI's warning
@@ -278,7 +284,7 @@ def _build(key: tuple, _ws, _ch: Choice, gov: str, sds: tuple, site: str, period
 
     return KpiReport(
         tech=ch.kind, kpi=ch.label, column=ch.column, unit=j.unit, low_is_bad=low,
-        per_day=j.how == "day_sum", threshold=float(threshold), governorate=gov,
+        per_day=False, threshold=float(threshold), governorate=gov,
         sup_districts=list(sds), site=site, start=period[0], end=period[1], cells=cells,
         rows=rows, trend=trend, tickets=tickets)
 

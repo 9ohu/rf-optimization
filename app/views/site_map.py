@@ -614,7 +614,7 @@ def _analysis_html(tk: dict) -> str:
         sector = tk["sector"] or "—"
     else:
         stage = "1 · General analysis (site level)"
-        sector = f"{tk['sector']} (worst cell)" if tk["sector"] else "—"
+        sector = "— (no user location: the site's cells are analysed)"
     if lead is not None:
         kpi = f"{lead.label} {_C.fmt(lead.worst, lead.unit)} · {lead.status}"
     elif a.classification == _C.NO_ISSUE:
@@ -630,6 +630,10 @@ def _analysis_html(tk: dict) -> str:
                                             if re_ is not None and re_.server else _C.NA)),
              ("RSRP", _C._esc(row["RSRP"])), ("KPI result", _C._esc(kpi)),
              ("Status", status), ("Description", _C._esc(row["Description"]))]
+    if re_ is not None and re_.neighbours:
+        # the KPI condition around the user location, sector by sector
+        pairs.append(("Neighbour sectors", _C._esc(" · ".join(
+            f"{nb.sector_id}: {nb.analysis.classification}" for nb in re_.neighbours))))
     return ('<div class="ca-kv sm-an">'
             + "".join(f"<span>{_C._esc(k)}</span><b>{v}</b>" for k, v in pairs)
             + f'</div><div class="sm-an-note">Stage {_C._esc(stage)} · correlation window '
@@ -643,51 +647,45 @@ def _stage_title(tk) -> str:
 
 
 def _rsrp_panel() -> None:
-    """RSRP on its band scale: the site area's (the coverage grid around the
-    site, as Delay Tickets Analysis reads it) and, once a user location is
-    approved, the RSRP measured there."""
+    """RSRP on its band scale — only at an approved user location: the grid
+    cell the location falls in (independent of the serving sector). Without a
+    user location there is no RSRP analysis."""
     re_ = TK["re"] if TK is not None else None
-    st.html(_title_html("RSRP", "signal",
-                        subtitle="user location" if re_ is not None and re_.rsrp is not None
-                        else "site area"))
+    st.html(_title_html("RSRP", "signal", subtitle="user location"))
     if TK is None:
         st.caption("Search a Ticket ID to see its RSRP.")
         return
-    area = CTX.rsrp.get(TK["site"]) if TK["site"] else None
-    area_median = _C._area_value(area, "median")
-    area_radius = _C._area_value(area, "radius_m")
-    site_txt = ("Not available" if area_median is None else
-                f"{area_median:.1f} dBm (≤{area_radius:.0f} m, MR-weighted median)"
-                if area_radius is not None else f"{area_median:.1f} dBm (MR-weighted median)")
     if re_ is not None:
         cust_txt = (f"{re_.rsrp:.1f} dBm ({re_.rsrp_note})" if re_.rsrp is not None
                     else f"Not available — {re_.rsrp_note}")
         sec_txt = (f"{re_.sector_id} · {TK['row']['Distance']}" if re_.server
                    else "Not available")
     else:
-        cust_txt = "Not available — no approved user location"
+        cust_txt = "Not analysed — no approved user location"
         sec_txt = "Not available"
-    value = re_.rsrp if re_ is not None and re_.rsrp is not None else (
-        area_median)
+    value = re_.rsrp if re_ is not None and re_.rsrp is not None else None
     point = {"median": value} if value is not None else None
     _, scale, _ = _C.rsrp_row(point, CTX.bands, bool(CTX.cov_kept))
     band = _C.rsrp_band(point, CTX.bands)
     if band is not None:
-        where = "user location" if re_ is not None and re_.rsrp is not None else "site area"
+        state = " · Coverage Issue" if re_.coverage_issue else ""
         status = (f'<div class="ca-evs" style="--c:{band.colour}">'
-                  f'<div class="ca-evs-h">{_C._esc(band.label)}</div>'
+                  f'<div class="ca-evs-h">{_C._esc(band.label + state)}</div>'
                   f'<div class="ca-evs-v">{value:.1f} dBm</div>'
-                  f'<div class="ca-evs-p">{_C._esc(where)}</div></div>')
+                  f'<div class="ca-evs-p">user location</div></div>')
+    elif re_ is not None and re_.no_grid:
+        status = ('<div class="ca-evs" style="--c:#EF4444"><div class="ca-evs-h">'
+                  'Poor coverage · Coverage Issue</div><div class="ca-evs-p">'
+                  "No RSRP grid at the user location</div></div>")
     else:
         status = ('<div class="ca-evs" style="--c:#64748B"><div class="ca-evs-h">— No data</div>'
                   '<div class="ca-evs-p">'
-                  + ("No coverage grid near the site" if CTX.cov_kept
+                  + ("RSRP is read only at an approved user location" if re_ is None
                      else "No coverage grid in Coverage Data (Data Resources)")
                   + "</div></div>")
     st.html('<div class="sm-rs"><div class="ca-kv sm-an">'
             + "".join(f"<span>{_C._esc(k)}</span><b>{_C._esc(v)}</b>" for k, v in (
-                ("Site area RSRP", site_txt), ("Customer location", cust_txt),
-                ("Sector / distance", sec_txt)))
+                ("Customer location", cust_txt), ("Sector / distance", sec_txt)))
             + f"</div>{scale}{status}</div>")
 
 

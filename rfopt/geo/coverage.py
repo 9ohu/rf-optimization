@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import yaml
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "thresholds_lte.yaml"
@@ -250,3 +251,84 @@ def build_grid(lat, lon, rsrp, mr, *, block: int = BLOCK,
     return CoverageGrid(lat0, lon0, step_lat, step_lon, block, levels,
                         (float(lat.min()), float(lon.min()),
                          float(lat.max()), float(lon.max())))
+
+
+# --------------------------------------------------------------------------- #
+# the RSRP at one point: the grid cell it falls in
+# --------------------------------------------------------------------------- #
+@dataclass
+class CellRsrp:
+    rsrp: float                 # dBm: the cell's MR-weighted median, as the map draws it
+    mr: float                   # MRs in the cell
+    points: int                 # measured points in the cell
+    cell_m: float               # the cell's size
+
+
+class CellGrid:
+    """The coverage files as the map's native grid (`build_grid`, level 0):
+    one MR-weighted median RSRP per grid cell, looked up by position."""
+
+    def __init__(self, files):
+        files = [f for f in (files or []) if len(getattr(f, "lat", ()))]
+        self.ok = bool(files)
+        if not self.ok:
+            return
+        la = np.concatenate([np.asarray(f.lat, dtype=np.float64) for f in files])
+        lo = np.concatenate([np.asarray(f.lon, dtype=np.float64) for f in files])
+        rsrp = np.concatenate([np.asarray(f.rsrp, dtype=np.float64) for f in files])
+        mr = np.concatenate([np.asarray(f.mr, dtype=np.float64) for f in files])
+        self.step_lat, self.step_lon = detect_step(la), detect_step(lo)
+        self.lat0 = lattice_origin(la, self.step_lat)
+        self.lon0 = lattice_origin(lo, self.step_lon)
+        keys = self._keys(la, lo)
+        self.keys, self.med, self.tot = weighted_median(keys, rsrp, mr)
+        self.n = np.bincount(np.searchsorted(self.keys, keys), minlength=len(self.keys))
+
+    def _keys(self, lat, lon) -> np.ndarray:
+        iy = np.floor((np.asarray(lat, dtype=np.float64) - self.lat0) / self.step_lat)
+        ix = np.floor((np.asarray(lon, dtype=np.float64) - self.lon0) / self.step_lon)
+        return (iy.astype(np.int64) << 32) + ix.astype(np.int64)
+
+    def at_many(self, lat, lon) -> pd.DataFrame:
+        """Per point: the RSRP and MRs of its grid cell (NaN where no grid covers it)."""
+        lat = pd.to_numeric(pd.Series(lat), errors="coerce").to_numpy(dtype=float)
+        lon = pd.to_numeric(pd.Series(lon), errors="coerce").to_numpy(dtype=float)
+        out = pd.DataFrame({"rsrp": np.full(len(lat), np.nan), "mr": np.full(len(lat), np.nan),
+                            "points": np.zeros(len(lat), dtype=int)})
+        ok = np.isfinite(lat) & np.isfinite(lon)
+        if not self.ok or not ok.any():
+            return out
+        k = self._keys(lat[ok], lon[ok])
+        i = np.clip(np.searchsorted(self.keys, k), 0, len(self.keys) - 1)
+        hit = self.keys[i] == k
+        rows = np.flatnonzero(ok)[hit]
+        out.loc[rows, "rsrp"] = self.med[i[hit]]
+        out.loc[rows, "mr"] = self.tot[i[hit]]
+        out.loc[rows, "points"] = self.n[i[hit]]
+        return out
+
+    @property
+    def cell_m(self) -> float:
+        return self.step_lat * M_PER_DEG if self.ok else float("nan")
+
+
+def grid_cell_rsrp(lat: float, lon: float, files) -> CellRsrp | None:
+    """The RSRP of the grid cell a point falls in — the same lattice and the
+    same MR-weighted median the coverage map draws — or None when no measured
+    grid covers the point. Nothing else is read: no sector, no radius, no
+    nearest grid."""
+    if lat is None or lon is None or not (np.isfinite(lat) and np.isfinite(lon)):
+        return None
+    grid = CellGrid(files)
+    r = grid.at_many([lat], [lon]).iloc[0]
+    if not grid.ok or pd.isna(r["rsrp"]):
+        return None
+    return CellRsrp(float(r["rsrp"]), float(r["mr"]), int(r["points"]), grid.cell_m)
+
+
+def poor_rsrp_line() -> float:
+    """The poor-coverage line: RSRP at or below it is poor — the configured
+    `avg_rsrp_dbm` warning line (see config/THRESHOLD_SOURCES.md)."""
+    from rfopt.kpi.thresholds import load_thresholds
+    rule = load_thresholds("LTE").rule("avg_rsrp_dbm")
+    return float(rule.warning) if rule is not None and rule.warning is not None else -105.0

@@ -201,8 +201,10 @@ def test_the_noc_tiles_show_the_checks_and_the_context_indicators():
                                             "VS.RscGroup.FlowCtrol.DL.DropNum"], "3G"))])
     obs = {c.key: c for c in observe_indicators("BAS0001", PT, inds, 2.0)}
     assert obs["S1"].state == "Detected" and obs["S1"].value == 3
-    assert obs["RTWP"].value == -92.0 and obs["RTWP"].state == "High"   # warning > -95 dBm
-    assert obs["FLOW"].value == 3000.0 * 19 and obs["FLOW"].sev == 1    # 24 h total, 19 h of data
+    # RTWP: an Issue only worse (higher) than -90 dBm in an hour
+    assert obs["RTWP"].value == -92.0 and obs["RTWP"].state == "Normal"
+    # flow control: judged per site and hour, > 100,000 an hour is an Issue
+    assert obs["FLOW"].value == 3000.0 and obs["FLOW"].sev == 0
 
     primary, secondary = ticket_tiles(a, obs.values())
     tiles = {x.key: x for x in primary + secondary}
@@ -406,7 +408,11 @@ def test_the_correlation_window_drives_the_kpi_evidence(tmp_path, monkeypatch):
         assert len(charts) == 1
         spec = json.loads(charts[0].proto.spec)
         window = next(sh for sh in spec["layout"]["shapes"] if sh.get("type") == "rect")
-        text = " ".join(b for b in _html(at) if 'class="ca-evs"' in b or 'class="ca-evk"' in b)
+        text = " ".join(b for b in _html(at) if 'class="ca-evk"' in b)
+        # the chart is the evidence: no evidence analysis panel, no RSRP row
+        # without a user location
+        assert not any('class="ca-evs"' in b for b in _html(at))
+        assert not any("Site area RSRP" in b for b in _html(at))
         return spec, window, text
 
     # the chart draws the whole period of the export and shades the window
@@ -414,8 +420,7 @@ def test_the_correlation_window_drives_the_kpi_evidence(tmp_path, monkeypatch):
     assert spec["data"][0]["type"] == "bar"                    # PRB: bars, not a line
     assert "10:00" in spec["layout"]["xaxis"]["range"][0]
     assert "14:00" in window["x0"] and "18:20" in window["x1"]
-    assert "4G DL PRB" in text and "Critical" in text and "L_Alpha_BAS0001-1" in text
-    assert "window 13 Sep 14:00 → 18:20 (±2 hours) shaded" in text
+    assert "4G DL PRB" in text
     assert any("Correlation window ±2 hours · problem 16:20" in a_.get("text", "")
                for a_ in spec["layout"]["annotations"])
     # the timeline is about one named KPI (the lead evidence KPI), with its peak
@@ -437,7 +442,6 @@ def test_the_correlation_window_drives_the_kpi_evidence(tmp_path, monkeypatch):
     spec, window, text = evidence()
     assert "10:00" in spec["layout"]["xaxis"]["range"][0]      # still the whole period
     assert "15:00" in window["x0"] and "16:50" in window["x1"]
-    assert "window 13 Sep 15:00 → 16:50 (±30 min) shaded" in text
 
 
 def test_the_search_and_filters_come_back_after_another_page(tmp_path, monkeypatch):

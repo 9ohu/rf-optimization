@@ -78,11 +78,11 @@ def test_a_planned_ticket_whose_site_the_ep_puts_on_air_is_judged_on_the_data():
     on = ep_on_air_sites(_ep())
     kmz = pd.DataFrame({"site_id": ["BAS3214"], "status": ["Planned"]})
     plan = A.plan_site_status("BAS3214", kmz, on)
+    assert plan == A.ON_AIR                    # shown on the ticket, never the verdict
     good, text = A.judge("planned", "BAS0480-2", None, A.Point(-92.0, 400, 8.0), plan,
-                         "BAS3214", metres=250.0)
-    assert good == A.SOLVE
-    assert text.startswith("The planned site BAS3214 is now on air.")
-    assert "still" not in text
+                         "BAS3214", metres=250.0, located=True, coverage=True)
+    assert good == A.SOLVE                     # the RSRP at the user decides
+    assert "no longer experiencing weak coverage" in text and "still" not in text
 
 
 def test_the_eps_REGION_column_is_read_as_the_file_writes_it(tmp_path):

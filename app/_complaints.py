@@ -24,11 +24,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from rfopt.complaints.correlate import (INSUFFICIENT, NO_ISSUE, NO_PROBLEM, severity,
+from rfopt.complaints.correlate import (INSUFFICIENT, MAIN, NO_ISSUE, NO_PROBLEM, severity,
                                         NOT_RESOLVED, POSSIBLE, RESOLVED,
                                         TECHNICAL, UNKNOWN, analyse_ticket,
                                         build_tracks, judged_kpis, local_time,
-                                        r5_governorate, site_area_rsrp)
+                                        r5_governorate)
 from rfopt.complaints.noc import (NAMES, PRIMARY, SECONDARY, build_indicators, fmt,
                                   indicator_columns, observe_indicators,
                                   site_timeline, ticket_tiles, tile_counts,
@@ -350,7 +350,10 @@ def _read_frames(key: tuple, _sources: dict):
         for _, _, info in group:
             kpis += [k for k in info.all_kpis if k not in kpis]
         judged = judged_kpis(kpis, kind)
-        context = indicator_columns(kpis, kind)
+        # RTWP and flow control are judged main KPIs now: only what is left
+        # (S1 failures) stays a context indicator
+        canon = {c for _, c, _ in judged}
+        context = [x for x in indicator_columns(kpis, kind) if x[1].canon not in canon]
         if not judged and not context:
             continue
         cols = [c for c, _, _ in judged] + [c for c, _, _ in context]
@@ -405,13 +408,6 @@ def _noc_all(sha: str, kpi_key: tuple, window_h: float, _tickets, _analysis, _in
     return [ticket_tiles(a, observe_indicators(t.site_id if isinstance(t.site_id, str) else "",
                                                t.problem_local, _inds, window_h))
             for t, a in zip(_tickets.itertuples(index=False), _analysis)]
-
-
-@st.cache_resource(show_spinner=False, max_entries=2)
-def _site_rsrp(cov_key: tuple, site_key: tuple, _files: tuple, _sites: dict) -> dict:
-    from rfopt.geo.coverage import load_bands
-    _, covered = load_bands()
-    return site_area_rsrp(list(_files), _sites, 500.0, covered)
 
 
 # --------------------------------------------------------------------------- #
@@ -494,7 +490,7 @@ def _incident_html(a, site_id: str, lead, band) -> str:
     elif a.classification == NO_ISSUE:
         colour, head, icon = PALETTE["excellent"], "NO NETWORK ISSUE DETECTED", "check"
         rsrp_ok = band is not None and band.key in ("excellent", "good")
-        text = ("KPI and site-area RSRP values are within normal operating thresholds."
+        text = ("KPI and user-location RSRP values are within normal operating thresholds."
                 if rsrp_ok else "The judged KPIs are within normal operating thresholds "
                                 "around the complaint.")
         body = (f"<p>{_esc(text)}</p><p><span class=\"ca-lbl\">Recommendation</span>"
@@ -588,7 +584,7 @@ def _final_html(a, lead, band) -> str:
             if band is not None else _esc(NA))
     issue = a.problem_type or ("None" if a.classification == NO_ISSUE else "Unknown")
     rows = [("Technical issue", f'<span class="ca-st" style="--c:{tcol}">{tech}</span>'),
-            ("Primary KPI", kpi), ("RSRP (site area)", rsrp), ("Site issue", _esc(issue)),
+            ("Primary KPI", kpi), ("RSRP (user location)", rsrp), ("Site issue", _esc(issue)),
             ("Resolution", _badge(a.resolution, RES_COLOUR.get(a.resolution, PALETTE["nodata"]))),
             ("Confidence", _esc((a.confidence or "–").upper()))]
     return ('<div class="ca-fin"><div class="ca-fin-g">'
@@ -721,14 +717,9 @@ def load_workspace(win_label: str, window_h: float, q: str = ""):
         got = places[col].reindex(sid.to_numpy()) if len(places) else pd.Series(index=sid)
         return [v if isinstance(v, str) and v and v != _UNPLACED else "" for v in got]
 
+    # RSRP is read only at an approved user location (the Sites map); without
+    # one there is no RSRP analysis and it never affects a ticket's result
     rsrp: dict = {}
-    if cov_kept and not sites.empty and {"latitude", "longitude"} <= set(sites.columns):
-        ll = {s: (float(sites.at[s, "latitude"]), float(sites.at[s, "longitude"]))
-              for s in sorted(set(sid) - {""})
-              if s in sites.index and pd.notna(sites.at[s, "latitude"])
-              and pd.notna(sites.at[s, "longitude"])}
-        ids = sorted(cov_kept)
-        rsrp = _site_rsrp(tuple(ids), tuple(sorted(ll)), tuple(cov_kept[k] for k in ids), ll)
 
     try:
         from rfopt.geo.coverage import band_index, load_bands
@@ -776,15 +767,15 @@ def load_workspace(win_label: str, window_h: float, q: str = ""):
     T["Ticket Type"] = [type_label(k, num) if k in TYPES else NA for k, num in _types]
     T["Problem Type"] = _col(tickets, "affected_service").map(_clean).replace("", NA)
     T["KPI (window)"] = [a.kpi_summary or "–" for a in analysis]
-    T["RSRP"] = [f"{rsrp[s]['median']:.0f} dBm (site area)" if s in rsrp else NA for s in sid]
+    T["RSRP"] = NA
     for i, r in re_by_i.items():
-        T.iat[i, T.columns.get_loc("RSRP")] = (f"{r.rsrp:.1f} dBm (user location)"
-                                               if r.rsrp is not None else NA)
-    # the serving sector: the one at the approved user location, else the
-    # sector of the worst cell the general analysis found
-    T["Serving Sector"] = [
-        (re_by_i[i].sector_id or NA) if i in re_by_i else (general_sector(s, a) or NA)
-        for i, (s, a) in enumerate(zip(sid, analysis))]
+        T.iat[i, T.columns.get_loc("RSRP")] = (
+            f"{r.rsrp:.1f} dBm (user location)" if r.rsrp is not None
+            else "No RSRP grid (user location)" if r.no_grid else NA)
+    # the serving sector is known only at an approved user location; without
+    # one the ticket is analysed per site, on all of its cells
+    T["Serving Sector"] = [(re_by_i[i].sector_id or NA) if i in re_by_i else NA
+                           for i in range(len(tickets))]
     T["Distance"] = [fmt_metres(re_by_i[i].server.distance_m)
                      if i in re_by_i and re_by_i[i].server else NA for i in range(len(T))]
     T["Description"] = [re_by_i[i].description if i in re_by_i else a.site_issue
@@ -827,14 +818,6 @@ def load_workspace(win_label: str, window_h: float, q: str = ""):
         tt_options=TT_OPTIONS, tt_colours=TT_COLOURS, re=re_by_i)
 
 
-def general_sector(site: str, analysis) -> str:
-    """The sector of the worst cell behind a general (site-level) analysis:
-    the lead KPI's worst cell, named as the hourly loader names sectors."""
-    from rfopt.complaints.relocate import lead_check, sector_of
-    lead = lead_check(analysis)
-    return sector_of(site, lead.worst_obj) if lead is not None and site and site != NA else ""
-
-
 def relocations(sha: str, tickets, kpi_key: tuple, kpi_files: dict, tracks,
                 window_h: float, cov_kept: dict) -> dict:
     """Row -> the re-analysis at the approved user location, for every ticket
@@ -860,10 +843,12 @@ def _relocated(sig: tuple, data_key: tuple, kpi_key: tuple, window_h: float, cov
     import _relocate as RL
     from rfopt.complaints.relocate import reanalyse
     sec_tracks = _load_sector_tracks(kpi_key, _kpi_files) if _kpi_files else []
-    sectors = RL.serving_sectors()
+    sectors, all_sectors = RL.serving_sectors(), RL.site_sectors()
     grids = [_cov[k] for k in cov_key]
+    # the ticket's own Site ID first; the best-server equation only without one
     return {i: reanalyse(float(v["lat"]), float(v["lon"]), _tickets.iloc[i]["problem_local"],
-                         sectors, sec_tracks, _tracks, window_h, grids)
+                         sectors, sec_tracks, _tracks, window_h, grids,
+                         site_id=_tickets.iloc[i]["site_id"], site_sectors=all_sectors)
             for i, v in _rows.items()}
 
 
@@ -955,12 +940,25 @@ def donut_html(title: str, icon: str, parts, total: int, subtitle: str = "",
               f'<div class="ca-leg">{legend}</div></div>')
 
 
+def _cell_series(tr, key: str, prefix: str = "") -> list[tuple]:
+    """(name, times, values, states) for every cell (or site, for a site-level
+    KPI) of one track — each cell its own series, each hour judged on its own."""
+    times, vals, objs = tr.by_site[key]
+    sev = tr.sev(key)
+    t = pd.DatetimeIndex(times)
+    out = []
+    for obj in dict.fromkeys(objs.tolist()):
+        m = objs == obj
+        out.append((f"{prefix}{obj}", t[m], np.asarray(vals, dtype=float)[m], sev[m].tolist()))
+    return out
+
+
 def evidence_items(ctx, sel) -> list[dict]:
     """The KPIs behind a ticket's evidence: the judged KPIs above threshold in the
     Correlation Window, then the context indicators that saw something there.
-    Each carries its hourly series over the whole period the exports cover and
-    inside the window. Values are the site's worst cell per hour for a level, the
-    site's total per hour for a count."""
+    Each carries every cell of the site (or of the serving sector at an approved
+    user location, then of its neighbour sectors) as its own hourly series over
+    the whole period the exports cover; a site-level KPI is the site's own."""
     site, pt = sel["Site ID"], sel["Problem Time"]
     i = int(sel["_i"])
     re_ = getattr(ctx, "re", {}).get(i)
@@ -970,17 +968,26 @@ def evidence_items(ctx, sel) -> list[dict]:
         return []
     a = ctx.analysis[i]
     items = []
-    for c in sorted([c for c in a.checks if c.sev > 0], key=lambda c: (-c.sev, -c.breach_hours)):
+    lead = sorted([c for c in a.checks if c.sev > 0],
+                  key=lambda c: (-c.sev, c.canon not in MAIN, -c.breach_hours))
+    for c in lead:
         tr = next((t for t in tracks if t.label == c.label and t.source == c.source
                    and key in t.by_site), None)
         if tr is None:
             continue
+        h = tr.hourly(key)                  # the hour's worst cell: the timeline's state
         times, vals, _ = tr.by_site[key]
-        wt, wv, lo, hi = window_series(times, vals, pt, ctx.window_h)
-        all_v = np.asarray(vals, dtype=float)
+        wt, wv, lo, hi = window_series(h["t"], h["v"], pt, ctx.window_h)
+        cells = _cell_series(tr, key)
+        for nb in (getattr(re_, "neighbours", None) or []):
+            ntr = next((t for t in nb.tracks if t.label == c.label and nb.sector_id in t.by_site),
+                       None)
+            if ntr is not None:
+                cells += _cell_series(ntr, nb.sector_id, prefix=f"{nb.sector_id} · ")
+        all_v = h["v"].to_numpy(dtype=float)
         items.append(dict(key=c.canon, tag=_CANON_TILE.get(c.canon, c.label), name=c.label,
-                          unit=c.unit, times=wt, values=wv, all_times=pd.DatetimeIndex(times),
-                          all_values=all_v, all_sev=[severity(tr.rule, v) for v in all_v],
+                          unit=c.unit, times=wt, values=wv, all_times=pd.DatetimeIndex(h["t"]),
+                          all_values=all_v, all_sev=h["sev"].tolist(), cells=cells,
                           sev=[severity(tr.rule, v) for v in wv], rule=tr.rule, lo=lo, hi=hi,
                           pt=pt, judged=True, level=True, state=c.status, state_sev=c.sev,
                           value=fmt(c.worst, c.unit), at=c.worst_at, obj=c.worst_obj,
@@ -1009,6 +1016,10 @@ def evidence_items(ctx, sel) -> list[dict]:
                           before="", note=ic.note))
     return items
 
+
+# one colour per cell when a chart shows every cell of a site or sector
+CELL_COLOURS = ("#20BFFF", "#A78BFA", "#2DD4BF", "#F472B6", "#FB923C", "#FACC15",
+                "#22C55E", "#60A5FA", "#E879F9", "#94A3B8")
 
 # how each KPI is drawn: a utilisation as bars, a drop count as stems, a level
 # as a line (3G smoothed), an availability or a success rate as steps, a
@@ -1040,7 +1051,27 @@ def evidence_figure(item, win_label: str = ""):
     points = [SEV_COLOUR[x] if x is not None and x > 0 else colour for x in item["all_sev"]]
     hover = "%{x|%d %b %H:%M}<br>%{y:,.2f}" + unit + "<extra></extra>"
     fig = go.Figure()
-    if style == "bars":
+    cells = item.get("cells") or []
+    if len(cells) > 1:
+        # every cell its own series, in the KPI's own chart type; an hour past
+        # the line takes its state's colour
+        for n, (name, ct, cv, cs) in enumerate(cells):
+            c_col = CELL_COLOURS[n % len(CELL_COLOURS)]
+            pts = [SEV_COLOUR[x] if x is not None and x > 0 else c_col for x in cs]
+            hov = f"{name}<br>" + hover
+            if style == "bars":
+                fig.add_bar(x=ct + hour / 2, y=cv, name=name, marker_color=pts,
+                            marker_line_width=0, hovertemplate=hov)
+            elif style in ("step", "smooth"):
+                fig.add_scatter(x=ct, y=cv, name=name, mode="lines+markers", hovertemplate=hov,
+                                line=dict(shape="hv" if style == "step" else "spline",
+                                          width=1.8, color=c_col),
+                                marker=dict(size=[7 if x else 0 for x in cs], color=pts))
+            else:
+                fig.add_scatter(x=ct, y=cv, name=name, mode="lines+markers", hovertemplate=hov,
+                                line=dict(width=1.8, color=c_col), marker=dict(size=5, color=pts))
+        fig.update_layout(barmode="group", showlegend=True)
+    elif style == "bars":
         fig.add_bar(x=t + hour / 2, y=v, marker_color=points, marker_line_width=0,
                     width=0.72 * hour.total_seconds() * 1000, hovertemplate=hover)
     elif style == "stems":
@@ -1086,14 +1117,18 @@ def evidence_figure(item, win_label: str = ""):
                        font=dict(size=9, color=PALETTE["cyan"]))
     rule = item["rule"]
     if rule is not None:
-        for level, line_colour, glyph in ((rule.warning, PALETTE["warning"], "⚠"),
-                                          (rule.critical, PALETTE["critical"], "●")):
+        lines = (((rule.critical, PALETTE["critical"], "Issue"),) if rule.warning == rule.critical
+                 else ((rule.warning, PALETTE["warning"], "⚠"),
+                       (rule.critical, PALETTE["critical"], "●")))
+        for level, line_colour, glyph in lines:
             fig.add_hline(y=level, line_dash="dash", line_width=1, line_color=line_colour,
                           annotation_text=f"{glyph} {level:g}{unit}",
                           annotation_font=dict(size=9, color=line_colour),
                           annotation_position="bottom left" if right else "bottom right")
     fig.add_vline(x=item["pt"], line_dash="dot", line_width=1.2, line_color="#F8FAFC")
-    fig.update_layout(height=210, margin=dict(l=4, r=8, t=18, b=4), showlegend=False,
+    fig.update_layout(height=210 if len(cells) <= 1 else 250,
+                      margin=dict(l=4, r=8, t=18, b=4), showlegend=len(cells) > 1,
+                      legend=dict(orientation="h", y=-0.28, x=0, font=dict(size=9)),
                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                       font=dict(size=10, color="#CBD5E1"), bargap=0.15, hovermode="x")
     fig.update_xaxes(range=[start, end], showgrid=False, linecolor="#2A4A6F", nticks=7,
@@ -1110,36 +1145,6 @@ def evidence_about_html(item) -> str:
             f'<span class="ca-evk-ico">{_icon(KPI_ICON.get(item["tag"], "chart"), colour, 24)}</span>'
             f'<div><div class="ca-evk-t">{_esc(item["tag"])} - {_esc(item["name"])}</div>'
             f'<div class="ca-evk-a">{_esc(KPI_ABOUT.get(item["key"], ""))}</div></div></div>')
-
-
-def evidence_status_html(item, win_label: str) -> str:
-    """The finding in the Correlation Window, beside the chart."""
-    sev = item["state_sev"]
-    colour = SEV_COLOUR.get(sev, PALETTE["nodata"])
-    rule, unit = item["rule"], item["unit"]
-    if rule is not None:
-        op = "<" if rule.direction == "up" else ">"
-        limits = f"⚠ {op} {rule.warning:g}{unit} · ● {op} {rule.critical:g}{unit}"
-    else:
-        limits = item["threshold"] or "—"
-    when = f"{item['at']:%d %b %H:%M}" if item["at"] is not None and pd.notna(item["at"]) else ""
-    lines = [item["span"] or when]
-    if item["obj"]:
-        lines.append(f"{item['obj']}" + (f" · {when}" if when else ""))
-    note = " · ".join(x for x in (
-        f"{item['resolution']} — {item['resolution_note']}" if item["resolution"]
-        else f"{item['note']} · context, not in the classification" if not item["judged"] else "",
-        f"before: {item['before']}" if item["before"] else "") if x)
-    period = (f"window {item['lo']:%d %b %H:%M} → {item['hi']:%H:%M} ({win_label}) shaded · "
-              "chart: all loaded hours")
-    return (f'<div class="ca-evs" style="--c:{colour}">'
-            f'<div class="ca-evs-h">{GLYPH.get(sev, "")} {_esc(item["state"])}</div>'
-            f'<div class="ca-evs-v">{_esc(item["value"])}</div>'
-            f'<div class="ca-evs-th">{_esc(limits)}</div>'
-            + "".join(f'<div class="ca-evs-p">{_esc(x)}</div>' for x in lines if x)
-            + (f'<div class="ca-evs-n">{_esc(note)}</div>' if note else "")
-            + f'<div class="ca-evs-n">{_esc(period)}</div>'
-            + "</div>")
 
 
 def rsrp_row(area, bands, cov_loaded: bool) -> tuple[str, str, str]:
@@ -1252,7 +1257,9 @@ def render_ticket(ctx, sel) -> None:
     a = ctx.analysis[i]
     raw = ctx.tickets.iloc[i]
     src = ctx.source.iloc[i] if len(ctx.source.columns) else pd.Series(dtype=object)
-    area = ctx.rsrp.get(sel["Site ID"])
+    # RSRP only at an approved user location (read from the RSRP grid there)
+    re_pt = ctx.re.get(i)
+    area = ({"median": re_pt.rsrp} if re_pt is not None and re_pt.rsrp is not None else None)
     band = rsrp_band(area, ctx.bands)
     primary, secondary = ctx.noc_rows[i]
     site = sel["Site ID"] if sel["Site ID"] != NA else ""
@@ -1310,8 +1317,7 @@ def render_ticket(ctx, sel) -> None:
         ("KPI value", _esc(f"{fmt(lead.worst, lead.unit)} at {lead.worst_at:%d %b %H:%M}"
                            + (f" on {lead.worst_obj}" if lead.worst_obj else "")) if lead else "—"),
         ("Site / network analysis", _esc(a.site_issue)),
-        ("Resolution", _esc(a.resolution)), ("Confidence", _esc(a.confidence or "—")),
-        ("Evidence", _esc(a.evidence or "—"))]
+        ("Resolution", _esc(a.resolution)), ("Confidence", _esc(a.confidence or "—"))]
     re_ = ctx.re.get(i)
     if re_ is not None:
         # approved on the Sites map: the result at the subscriber's location
@@ -1377,20 +1383,15 @@ def render_ticket(ctx, sel) -> None:
         if not items:
             st.html('<div class="ca-note">No KPI above its threshold, and no context indicator '
                     "detected, in the correlation window.</div>")
+        # the chart is the evidence: every cell of the site (of the serving
+        # sector and its neighbours at an approved user location)
         for k, item in enumerate(items):
             with st.container(key=f"rf_card_ca_ev_{k}", border=True):
-                ca, cc, cd = st.columns([0.95, 2.6, 1.25], gap="small", vertical_alignment="center")
+                ca, cc = st.columns([0.95, 3.85], gap="small", vertical_alignment="center")
                 ca.html(evidence_about_html(item))
                 with cc:
                     st.plotly_chart(evidence_figure(item, ctx.win_label), key=f"ca_ev_chart_{k}",
                                     config={"displayModeBar": False}, width="stretch")
-                cd.html(evidence_status_html(item, ctx.win_label))
-        with st.container(key="rf_card_ca_ev_rsrp", border=True):
-            about, scale, status = rsrp_row(area, ctx.bands, bool(ctx.cov_kept))
-            ra, rc, rd = st.columns([0.95, 2.6, 1.25], gap="small", vertical_alignment="center")
-            ra.html(about)
-            rc.html(scale)
-            rd.html(status)
         # the timeline is about one KPI, named: the lead evidence KPI unless another
         # of the site's judged KPIs is picked — never several folded into one bar
         site_kpis = [tr.label for tr in ctx.tracks if site and site in tr.by_site]

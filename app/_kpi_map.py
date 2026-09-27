@@ -214,7 +214,8 @@ def threshold_rule(kpi: str):
     canon = canonical_name(kpi) or kpi
     rule = (load_thresholds("LTE").rule(canon)
             or load_thresholds("UMTS").rule(canon))
-    if rule is None or rule.warning is None or rule.critical is None:
+    # only a line with a documented source judges (config/THRESHOLD_SOURCES.md)
+    if rule is None or not rule.judged:
         return None
     return rule
 
@@ -276,6 +277,7 @@ def scheme_segments(scheme: BandScheme, lo: float, hi: float) -> list[tuple]:
     if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
         return []
     colour = {k: c for k, c, _ in scheme.spec}
+    colour.setdefault("warning", KPI_BAND["warning"])   # empty on a one-line rule
     rule = scheme.rule
     if rule is not None:
         crit, warn = float(rule.critical), float(rule.warning)
@@ -323,6 +325,8 @@ def band_scheme(values: pd.Series, kpi: str) -> BandScheme:
                      ("critical", KPI_BAND["critical"],
                       f"({_fmt(crit)}, {_fmt(hi)}]" if hi > crit
                       else f"({_fmt(crit)}, +∞)")]
+        if warn == crit:                # one Issue line: no warning band between
+            spec = [x for x in spec if x[0] != "warning"]
         return BandScheme(spec, rule, parts, [])
 
     cuts = _nice_breaks(v)

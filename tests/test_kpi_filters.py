@@ -19,9 +19,12 @@ def _app_on_path():
 
 def _objects() -> pd.DataFrame:
     rows = [
-        ("BAS0001", "BAS0001-S1", "4G", "PRB", "4G DL PRB", "PRB_COL", 92.0, 2, "Critical"),
-        ("BAS0001", "BAS0001-S2", "4G", "PRB", "4G DL PRB", "PRB_COL", 30.0, 0, "Normal"),
-        ("BAS0002", "BAS0002-S1", "4G", "INTER", "4G UL interference", "INT_COL", -104.0, 1,
+        # every row is one cell (the export's own level); a 3G NodeB-level
+        # KPI is its site
+        ("BAS0001", "L21_Alpha_BAS0001-1", "4G", "PRB", "4G DL PRB", "PRB_COL", 92.0, 2,
+         "Critical"),
+        ("BAS0001", "L_Alpha_BAS0001-2", "4G", "PRB", "4G DL PRB", "PRB_COL", 30.0, 0, "Normal"),
+        ("BAS0002", "T_Beta_BAS0002-1", "4G", "INTER", "4G UL interference", "INT_COL", -104.0, 1,
          "Warning"),
         ("NAS0001", "NAS0001", "3G", "FLOW", "3G DL flow-control drops", "FLOW_COL", 72000.0, 1,
          "Warning"),
@@ -29,7 +32,7 @@ def _objects() -> pd.DataFrame:
     ]
     df = pd.DataFrame(rows, columns=["site_id", "object_id", "kind", "key", "label", "column",
                                      "value", "sev", "state"])
-    return df.assign(object_type="Sector", unit="", judged=True, low_is_bad=False,
+    return df.assign(object_type="Cell", unit="", judged=True, low_is_bad=False,
                      threshold="⚠ > 1", peak=df["value"],
                      peak_time=pd.Timestamp("2026-09-13 10:00"))
 
@@ -45,12 +48,12 @@ NAMES = pd.Series(["Alpha_BAS0001", "Beta_BAS0002", "Delta_BAS0003", "Gamma_NAS0
                   index=REGIONS.index)
 KINDS = {"BAS0001": ["4G"], "BAS0002": ["4G"], "BAS0003": ["4G"], "NAS0001": ["3G"]}
 INDEX = pd.DataFrame(
-    [("4G", "L_Alpha_BAS0001-1", "BAS0001", "BAS0001-S1"),
-     ("4G", "L21_Alpha_BAS0001-1", "BAS0001", "BAS0001-S1"),
-     ("4G", "L_Alpha_BAS0001-2", "BAS0001", "BAS0001-S2"),
-     ("4G", "T_Beta_BAS0002-1", "BAS0002", "BAS0002-S1"),
-     ("3G", "Gamma_NAS0001", "NAS0001", "NAS0001-S0")],
-    columns=["tech", "object", "site_id", "sector_id"])
+    [("4G", "L_Alpha_BAS0001-1", "BAS0001", "BAS0001-S1", "cell"),
+     ("4G", "L21_Alpha_BAS0001-1", "BAS0001", "BAS0001-S1", "cell"),
+     ("4G", "L_Alpha_BAS0001-2", "BAS0001", "BAS0001-S2", "cell"),
+     ("4G", "T_Beta_BAS0002-1", "BAS0002", "BAS0002-S1", "cell"),
+     ("3G", "Gamma_NAS0001", "NAS0001", "NAS0001-S0", "site")],
+    columns=["tech", "object", "site_id", "sector_id", "level"])
 CELL_IDS = pd.Series({"L_ALPHA_BAS0001-1": 1.0, "L21_ALPHA_BAS0001-1": 11})
 
 
@@ -63,11 +66,11 @@ def _rows():
 def test_the_rows_carry_their_place_name_cells_and_issue():
     rows, _ = _rows()
     r = rows.set_index(["object_id", "key"])
-    s1 = r.loc[("BAS0001-S1", "PRB")]
-    assert s1["cell_name"] == "L21_Alpha_BAS0001-1, L_Alpha_BAS0001-1"
-    assert s1["cell_id"] == "11, 1"                      # from the EP tracker
+    s1 = r.loc[("L21_Alpha_BAS0001-1", "PRB")]
+    assert s1["cell_name"] == "L21_Alpha_BAS0001-1"       # the cell itself
+    assert s1["cell_id"] == "11"                          # from the EP tracker
     assert s1["issue"] == "High DL PRB" and s1["site_name"] == "Alpha_BAS0001"
-    assert r.loc[("BAS0001-S2", "PRB"), "issue"] == ""   # within its threshold
+    assert r.loc[("L_Alpha_BAS0001-2", "PRB"), "issue"] == ""   # within its threshold
     nodeb = r.loc[("NAS0001", "FLOW")]
     assert nodeb["cell_name"] == "Gamma_NAS0001" and nodeb["cell_id"] == ""
     assert nodeb["governorate"] == "Dhi Qar" and nodeb["city"] == "Nasiriya"
@@ -98,12 +101,12 @@ def test_every_filter_keeps_sites_and_rows_together():
     assert keep(site="NAS0001")[0] == {"NAS0001"}
     # the table's search: every word, anywhere in the row (here a city and a status)
     u, r = keep(q="zubair warning")
-    assert u == {"BAS0002"} and list(r["object_id"]) == ["BAS0002-S1"]
+    assert u == {"BAS0002"} and list(r["object_id"]) == ["T_Beta_BAS0002-1"]
     u, r = keep(cell="l21")
-    assert u == {"BAS0001"} and set(r["object_id"]) == {"BAS0001-S1"}
+    assert u == {"BAS0001"} and set(r["object_id"]) == {"L21_Alpha_BAS0001-1"}
     u, r = keep(states=("Critical", "Warning"))
     assert len(u) == 4 and len(r) == 3                   # a status narrows the rows only
-    assert list(keep(issues=("High DL PRB",))[1]["object_id"]) == ["BAS0001-S1"]
+    assert list(keep(issues=("High DL PRB",))[1]["object_id"]) == ["L21_Alpha_BAS0001-1"]
     assert list(keep(columns=("FLOW_COL",))[1]["key"]) == ["FLOW"]
 
     f = Filters(governorate="Basrah", sup_districts=("Markaz Al-Basrah", "Markaz Al-Zubair"),
