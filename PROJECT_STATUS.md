@@ -23,8 +23,12 @@ line (-105) is the existing value, not confirmed.
 - **User location** (`relocate.reanalyse`): the ticket's Site ID -> its sector
   facing the user (`facing_sector`); only an empty / 0 Site ID uses the best
   server equation. RSRP = the grid cell at the point (`coverage.grid_cell_rsrp`,
-  map lattice), no grid = Poor coverage / Coverage Issue. `NEIGHBOURS = 3`
-  sectors of other sites, each on all of its cells (context, not verdict).
+  map lattice), no grid = Poor coverage / Coverage Issue. Neighbours: no
+  fixed count - per other site its sector facing the user (azimuth within
+  `FACING_DEG` 60 of the bearing to the user, site within `RELEVANT_M` 3 km);
+  in each direction from the user (bearings within `SAME_DIRECTION_DEG` 30,
+  the serving sector included) only the nearest; each on all of its cells
+  (context, not verdict).
 - **Sleep** (`sleep/analysis.py`): reason = Diagnostic Comment > RF Analysis >
   Closure Code (`reason_of`); "not technical" comment -> Not Technical; DT ->
   coverage; planned -> coverage unless the comment / RF says load. Coverage:

@@ -18,9 +18,10 @@ longitude is approved on the Sites map:
   (`rfopt.geo.coverage.grid_cell_rsrp`) — independent of the serving sector.
   A location with no grid, or RSRP at or below the poor line, is a Coverage
   Issue in the result; with good coverage the KPI analysis decides.
-* **Neighbour sectors:** a few sectors of other sites around the user
-  location (`neighbour_sectors`), each analysed on all of its cells —
-  context around the user, not part of the verdict.
+* **Neighbour sectors:** the sectors of other sites facing the user location,
+  the nearest one in each direction around it (`neighbour_sectors`) — no fixed
+  count — each analysed on all of its cells; context around the user, not
+  part of the verdict.
 
 Nothing is invented: a value the data does not carry reads "N/A".
 """
@@ -154,7 +155,14 @@ def tracks_for(sector_id: str, site_id: str, sec_tracks, site_tracks) -> list:
 # --------------------------------------------------------------------------- #
 # the re-analysis
 # --------------------------------------------------------------------------- #
-NEIGHBOURS = 3              # neighbour sectors analysed around a user location
+# neighbour sectors around a user location: no fixed count. A sector is a
+# candidate when it faces the user (its azimuth within FACING_DEG of the
+# bearing from its site to the user) and its site is within RELEVANT_M; of the
+# candidates seen from the user in the same direction (bearings closer than
+# SAME_DIRECTION_DEG), only the nearest is kept — a farther one is behind it.
+FACING_DEG = 60.0
+SAME_DIRECTION_DEG = 30.0
+RELEVANT_M = 3000.0
 BEST, TICKET = "best server", "ticket site"
 
 
@@ -188,13 +196,23 @@ def facing_sector(lat: float, lon: float, site_sectors: pd.DataFrame) -> Server 
 
 
 def neighbour_sectors(lat: float, lon: float, sectors: pd.DataFrame, serving_site: str,
-                      *, most: int = NEIGHBOURS, nearest_sites: int = 6) -> list[Server]:
-    """A few sectors of other sites around (lat, lon): among the nearest sites,
-    each site's sector best pointed at the point (the Sites map's distance ×
-    off-boresight score), the best `most` of them — one per site."""
+                      serving: Server | None = None) -> list[Server]:
+    """The sectors of other sites that shape the radio environment at (lat, lon).
+
+    1. Candidates: per site, its sector facing the point (the smallest gap
+       between its azimuth and the bearing from the site to the point), kept
+       when that gap is within FACING_DEG and the site within RELEVANT_M.
+    2. Direction: each candidate is placed by the bearing from the point to its
+       site. Nearest first, a candidate is kept unless a closer kept sector —
+       the serving sector included — lies in the same direction (bearings
+       within SAME_DIRECTION_DEG): the farther one is behind it.
+    The count is whatever the directions around the point give, never fixed."""
     if sectors is None or len(sectors) == 0 or not (np.isfinite(lat) and np.isfinite(lon)):
         return []
-    s = sectors.dropna(subset=["latitude", "longitude", "azimuth_deg"])
+    need = ["latitude", "longitude", "azimuth_deg"]
+    if not set(need) <= set(sectors.columns):
+        return []
+    s = sectors.dropna(subset=need)
     s = s[s["site_id"].astype(str).str.upper() != str(serving_site).upper()]
     if s.empty:
         return []
@@ -202,17 +220,31 @@ def neighbour_sectors(lat: float, lon: float, sectors: pd.DataFrame, serving_sit
     d = np.hypot((s["latitude"].to_numpy(float) - lat) * _M_PER_DEG,
                  (s["longitude"].to_numpy(float) - lon) * _M_PER_DEG * coslat)
     s = s.assign(dist_m=d)
-    near = s.groupby("site_id")["dist_m"].min().nsmallest(nearest_sites).index
-    per_site: dict = {}
-    for r in s[s["site_id"].isin(near)].itertuples(index=False):
+    s = s[s["dist_m"] <= RELEVANT_M]
+    # 1. per site, its sector facing the point — when it faces it at all
+    facing: dict = {}
+    for r in s.itertuples(index=False):
         brg = bearing(r.latitude, r.longitude, lat, lon)
         off = az_gap(r.azimuth_deg, brg)
-        score = r.dist_m * (1.0 + (off / 65.0) ** 2)
-        if r.site_id not in per_site or score < per_site[r.site_id][0]:
-            per_site[r.site_id] = (score, Server(str(r.sector_id), str(r.site_id),
-                                                 float(r.dist_m), float(brg),
-                                                 float(r.azimuth_deg), float(off)))
-    return [srv for _, srv in sorted(per_site.values(), key=lambda x: x[0])[:most]]
+        if off > FACING_DEG:
+            continue
+        if r.site_id not in facing or off < facing[r.site_id].az_diff_deg:
+            facing[r.site_id] = Server(str(r.sector_id), str(r.site_id), float(r.dist_m),
+                                       float(brg), float(r.azimuth_deg), float(off))
+    # 2. one per direction: the nearest; a farther one behind it is left out
+    taken: list[float] = []          # the directions (from the point) already served
+    if serving is not None and serving.distance_m >= 1.0:
+        taken.append((serving.bearing_deg + 180.0) % 360.0)
+    out: list[Server] = []
+    for srv in sorted(facing.values(), key=lambda x: (x.distance_m, x.az_diff_deg)):
+        toward = (srv.bearing_deg + 180.0) % 360.0      # from the point to the site
+        if srv.distance_m >= 1.0 and any(az_gap(toward, t) < SAME_DIRECTION_DEG
+                                         for t in taken):
+            continue
+        out.append(srv)
+        if srv.distance_m >= 1.0:
+            taken.append(toward)
+    return out
 
 
 @dataclass
@@ -310,8 +342,9 @@ def reanalyse(lat: float, lon: float, problem_time, sectors: pd.DataFrame,
     `site_id`: the ticket's Site ID. When it names a site, its sector facing
     the point (among `site_sectors`, the site's sectors in the KMZ) serves; when
     it names none, the best server among the on-air `sectors`. Then that
-    sector's KPIs on every cell, the RSRP of the grid cell at the point, and a
-    few neighbour sectors, each on every cell."""
+    sector's KPIs on every cell, the RSRP of the grid cell at the point, and the
+    neighbour sectors facing the point (nearest per direction), each on
+    every cell."""
     site = ticket_site(site_id)
     if site:
         pool = site_sectors if site_sectors is not None else sectors
@@ -348,7 +381,7 @@ def reanalyse(lat: float, lon: float, problem_time, sectors: pd.DataFrame,
         note = "no coverage grid loaded"
     neighbours = []
     if server is not None:
-        for nb in neighbour_sectors(lat, lon, sectors, server.site_id):
+        for nb in neighbour_sectors(lat, lon, sectors, server.site_id, server):
             a, t = _sector_analysis(nb, problem_time, sec_tracks, site_tracks, window_h)
             neighbours.append(Neighbour(nb, a, t))
     return Relocated(float(lat), float(lon), server, analysis, rsrp, note,
@@ -369,7 +402,7 @@ def parse_latlon(text: str):
     return None
 
 
-__all__ = ["BEST", "NA", "NEIGHBOURS", "Neighbour", "Relocated", "Server", "TICKET", "az_gap",
+__all__ = ["BEST", "FACING_DEG", "NA", "RELEVANT_M", "SAME_DIRECTION_DEG", "Neighbour", "Relocated", "Server", "TICKET", "az_gap",
            "bearing", "best_server", "describe", "facing_sector", "fmt_metres", "lead_check",
            "metres", "neighbour_sectors", "parse_latlon", "reanalyse", "sector_frame",
            "sector_of", "sector_tracks", "ticket_site", "tracks_for"]

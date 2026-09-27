@@ -234,18 +234,81 @@ def test_the_serving_sector_is_analysed_on_every_one_of_its_cells():
     assert prb.cells == ["L_Alpha_BAS0001-2"]      # its own cells, no other sector's
 
 
-def test_a_few_neighbour_sectors_around_the_user_each_on_all_of_its_cells():
+def test_the_neighbour_sectors_facing_the_user_each_on_all_of_its_cells():
     frames = [_lte(), _lte(site="BAS0002", prb_c2=lambda h: 30)]
     lat, lon = _at(120, 300)
     r = RL.reanalyse(lat, lon, PT, _sectors(), RL.sector_tracks(frames), build_tracks(frames),
                      2.0, site_id="BAS0001")
-    assert 0 < len(r.neighbours) <= RL.NEIGHBOURS
     sites = [nb.server.site_id for nb in r.neighbours]
     assert "BAS0001" not in sites and len(set(sites)) == len(sites)   # one per other site
+    assert all(nb.server.az_diff_deg <= RL.FACING_DEG for nb in r.neighbours)
     nb2 = next(nb for nb in r.neighbours if nb.server.site_id == "BAS0002")
     assert nb2.analysis.classification == NO_ISSUE
+    prb = next(c for c in nb2.analysis.checks if c.canon == "dl_prb_util")
+    assert prb.cells == [f"L_Alpha_BAS0002-{int(nb2.sector_id[-1])}"]  # all of its cells
     # the neighbours never change the serving sector's verdict
     assert r.analysis.classification == TECHNICAL
+
+
+USER = (30.60, 47.90)
+
+
+def _site_at(site, bearing_from_user, metres, facing_user=True, azimuth=None):
+    """One sector of `site`, `metres` from USER in `bearing_from_user`, pointed
+    back at the user (or at `azimuth`)."""
+    la, lo = _at(bearing_from_user, metres, USER)
+    az = (bearing_from_user + 180.0) % 360.0 if facing_user else azimuth
+    return {"sector_id": f"{site}-S1", "site_id": site, "latitude": la, "longitude": lo,
+            "azimuth_deg": az}
+
+
+def _pick(rows, serving="SRV0000", server=None):
+    return [nb.sector_id for nb in RL.neighbour_sectors(*USER, pd.DataFrame(rows), serving,
+                                                         server)]
+
+
+def test_of_two_sectors_facing_the_user_from_one_direction_only_the_nearest():
+    # A 100 m and B 300 m north of the user, both facing it: A only
+    rows = [_site_at("AAA0001", 0, 100), _site_at("BBB0001", 0, 300)]
+    assert _pick(rows) == ["AAA0001-S1"]
+    # a few degrees apart is still the same direction
+    rows = [_site_at("AAA0001", 0, 100), _site_at("BBB0001", 12, 300)]
+    assert _pick(rows) == ["AAA0001-S1"]
+
+
+def test_every_direction_around_the_user_keeps_its_nearest_facing_sector():
+    rows = [_site_at("NNN0001", 0, 150), _site_at("NNN0002", 5, 600),      # north
+            _site_at("EEE0001", 90, 400), _site_at("EEE0002", 95, 900),    # east
+            _site_at("SSS0001", 180, 700),                                 # south
+            _site_at("WWW0001", 270, 250), _site_at("WWW0002", 265, 1200)]  # west
+    assert _pick(rows) == ["NNN0001-S1", "WWW0001-S1", "EEE0001-S1", "SSS0001-S1"]
+    # no fixed count: two directions give two, one gives one
+    assert len(_pick(rows[:1] + rows[5:6])) == 2
+    assert len(_pick(rows[:2])) == 1
+
+
+def test_a_sector_not_facing_the_user_is_not_a_neighbour_and_hides_nothing():
+    # the nearer north site points away from the user: it is not a neighbour,
+    # and the farther north site facing the user is kept
+    rows = [_site_at("AWY0001", 0, 100, facing_user=False, azimuth=0.0),
+            _site_at("BBB0001", 0, 300)]
+    assert _pick(rows) == ["BBB0001-S1"]
+    # the site's sector that faces the user is the one taken
+    la, lo = _at(90, 200, USER)
+    rows = [{"sector_id": f"TRI0001-S{i}", "site_id": "TRI0001", "latitude": la,
+             "longitude": lo, "azimuth_deg": az} for i, az in ((1, 0.0), (2, 120.0), (3, 240.0))]
+    assert _pick(rows) == ["TRI0001-S3"]
+
+
+def test_a_site_behind_the_serving_sector_is_not_a_neighbour_nor_a_far_one():
+    serving = RL.Server("SRV0000-S1", "SRV0000", 200.0, 180.0, 180.0, 0.0)  # 200 m north
+    rows = [_site_at("BEH0001", 3, 500),            # behind the serving site
+            _site_at("SSS0001", 180, 300),          # the south side: kept
+            _site_at("FAR0001", 90, RL.RELEVANT_M + 500)]
+    assert _pick(rows, server=serving) == ["SSS0001-S1"]
+    # the serving site's own sectors are never neighbours
+    rows = [_site_at("SRV0000", 90, 100)]
+    assert _pick(rows, server=serving) == []
 
 
 def _grid(points):
