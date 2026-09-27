@@ -90,7 +90,8 @@ def test_the_preparation_runs_the_pages_own_loaders(tmp_path, monkeypatch, put_r
         assert states[label] == "ok", (label, out)
     assert states["Loading Network Data — EP Tracker"] == "skipped"     # not applied
     assert not [o for o in out if o["state"] == "failed"], out
-    assert msgs[0] == {"type": "begin", "total": len(out)} and msgs[-1] == {"type": "ready"}
+    assert msgs[0] == {"type": "begin", "total": len(out), "steps": [3, 3, 2, 4]}
+    assert msgs[-1] == {"type": "ready"}
     assert sum(m["type"] == "done" for m in msgs) == len(out)
     assert WU.is_warm()
     # the pages' caches are filled: the Sites map's KMZ and the Complaints analysis
@@ -137,3 +138,18 @@ def test_the_first_run_shows_the_screen_and_prepares_then_never_again():
     at.run()                                        # a rerun: prepared already
     assert not at.exception, at.exception
     assert _scripts(at) == []
+
+
+def test_a_comet_from_the_tower_brings_the_day_and_the_dial_follows_each_step():
+    html, js = S.markup(), S.JS
+    # the backbone the comet flies: from the tower to Baghdad; and the foot of the picture to Basra
+    assert ("tower", "baghdad", -20) in S.LINKS and html.count('class="lk bk"') == 1
+    assert html.count('class="bk2"') == 1 and html.count('class="rfs-head"') == 1
+    # the map stays dark until the comet lands, then day spreads from Baghdad
+    assert "setTimeout(function () { root.classList.add('s2'); }, ARRIVE * 1000)" in js
+    assert S.MIN_SHOW >= S.LAUNCH + S.FLY + S.REVEAL * .9
+    # the dial: one quarter per step, each filled by that step's own tasks
+    assert html.count('class="sg"') == 4 and html.count('class="sgt"') == 4
+    assert "stepDone[m.step]" in js and "stepTotal = m.steps" in js
+    for word in ("STANDBY", "SYNCING", "ONLINE", "SYSTEM LOAD"):
+        assert word in html

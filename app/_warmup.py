@@ -197,7 +197,10 @@ def run(report: Callable[[dict], None] | None = None) -> list[dict]:
     each task did: ok, skipped (its data is not applied) or failed."""
     say = report or (lambda _m: None)
     todo = tasks()
-    say({"type": "begin", "total": len(todo)})
+    # how many tasks each of the four steps holds: the screen fills each
+    # step's own part of its dial as that step's tasks finish
+    say({"type": "begin", "total": len(todo),
+         "steps": [sum(t.step == s for t in todo) for s in (DATA, NETWORK, MAP, ANALYSIS)]})
     out = []
     for k, t in enumerate(todo):
         say({"type": "task", "i": k, "step": t.step, "label": t.label})

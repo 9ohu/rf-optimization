@@ -1,5 +1,16 @@
 # Project status / handoff  (updated 2026-09-26)
 
+## 2026-09-27 - Startup: a comet brings the day, a dial for the four steps
+
+`app/_startup.py`, the loading itself unchanged (same tasks, messages, Ready
+rule). The tower's signal flies as a comet (LAUNCH 1 s, FLY 1.9 s) to Baghdad;
+where it lands day spreads over the map (REVEAL 2.4 s), each city lighting as
+it is reached, each link drawing itself then carrying data. Two backbones stay
+live: tower to Baghdad and the foot of the picture to Basra. The panel is a
+dial: one quarter per step, each filled by its own step's tasks (`_warmup`'s
+begin message now carries the task count of each step), beside the four
+steps Standby / Syncing % / Online. MIN_SHOW 5.4 s so the scene plays through.
+
 ## 2026-09-26 - Main system background, glass sidebar, Daily Worklist removed
 
 Visual only; the Dashboard and every page keep their layout and logic.
