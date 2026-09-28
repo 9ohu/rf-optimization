@@ -14,14 +14,16 @@ the RSRP at the user location — in the R5 team's fixed wording:
 The fixed prefixes, word for word:
 
     4G interference      External interference
+    3G RTWP              External interference   (root cause: 3G RTWP interference)
     High flow control    Temporary Capacity Limitation
     High PRB             sector Expansion Needed
-    Availability         service Recovered
+    Availability         service Recovered       (only once recovered; still down:
+                                                  no prefix)
     No network issue     No Network Issue Detected
 
-A KPI without a fixed prefix (3G RTWP, a coverage issue) starts at its Root
-cause. A value the data does not carry reads N/A; a root cause the analysis
-could not determine is left out, never guessed.
+A KPI without a fixed prefix (a coverage issue) starts at its Root cause. A
+value the data does not carry reads N/A; a root cause the analysis could not
+determine is left out, never guessed.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ NA = "N/A"
 
 PREFIX = {
     "ul_rssi_dbm": "External interference",
+    "ul_rtwp_dbm": "External interference",          # 3G RTWP: the same as 4G interference
     "dl_flowctrl_drops": "Temporary Capacity Limitation",
     "dl_prb_util": "sector Expansion Needed",
     "ul_prb_util": "sector Expansion Needed",
@@ -64,6 +67,8 @@ STATUS_ISSUE = {
     "cell_avail_pct": "low availability",
 }
 COVERAGE = "Coverage"
+# the root cause of a 3G RTWP issue names the 3G problem, never 4G
+ROOT_CAUSE = {"ul_rtwp_dbm": "3G RTWP interference"}
 
 
 def _num(v) -> float | None:
@@ -102,10 +107,17 @@ def ticket_comment(analysis, *, sector: str = "", distance_m=None, rsrp=None,
 
     lead = lead_check(analysis)
     lines: list[str] = []
-    if lead is not None and lead.canon in PREFIX:
+    # "service Recovered" only once the availability has recovered (Resolved,
+    # normal to the end of the data); still down: no prefix
+    if lead is not None and lead.canon in PREFIX and not (
+            lead.canon == "cell_avail_pct" and lead.resolution != RESOLVED):
         lines.append(PREFIX[lead.canon])
-    root = (COVERAGE if coverage_issue
-            else analysis.problem_type if analysis.classification != INSUFFICIENT else "")
+    if coverage_issue:
+        root = COVERAGE
+    elif analysis.classification == INSUFFICIENT:
+        root = ""
+    else:
+        root = ROOT_CAUSE.get(lead.canon if lead is not None else "", analysis.problem_type)
     if root:
         lines.append(f"Root cause: {root}")
 

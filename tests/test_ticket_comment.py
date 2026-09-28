@@ -30,8 +30,6 @@ WHERE = dict(sector="BAS3315-1", distance_m=100.4, rsrp=-98.2, lat=30.512345, lo
      "High flow control"),
     ("dl_prb_util", "sector Expansion Needed", "Congestion", "high PRB utilization",
      "High utilization"),
-    ("cell_avail_pct", "service Recovered", "Availability", "low availability",
-     "low availability"),
 ])
 def test_each_kpi_opens_with_its_fixed_prefix_word_for_word(canon, prefix, ptype, since,
                                                             status):
@@ -82,11 +80,46 @@ def test_values_the_data_does_not_carry_read_na_never_invented():
         assert not text.startswith(prefix)
 
 
-def test_a_kpi_without_a_fixed_prefix_starts_at_its_root_cause():
-    a = _analysis(TECHNICAL, "Interference", [_check("ul_rtwp_dbm")])
+def test_3g_rtwp_follows_the_4g_interference_comment_as_a_3g_problem():
+    a = _analysis(TECHNICAL, "Interference", [_check("ul_rtwp_dbm", issue_hours=9)])
     lines = CM.ticket_comment(a, **WHERE).split("\n")
-    assert lines[0] == "Root cause: Interference"
-    assert "3G interferences for 7 hours" in lines[-1]
+    assert lines == [
+        "External interference",
+        "Root cause: 3G RTWP interference",
+        "issue description: customer’s serving site sector BAS3315-1 with distance 100m, "
+        "and the RSRP was -98, User Location: 30.51234, 47.81000. Since it was suffering "
+        "from high RTWP (3G interference).",
+        "The site issue still exists and not solved yet, the site suffering from "
+        "3G interferences for 9 hours"]
+    assert "4G" not in "\n".join(lines)
+    solved = _analysis(TECHNICAL, "Interference",
+                       [_check("ul_rtwp_dbm", resolution=RESOLVED)])
+    lines = CM.ticket_comment(solved, **WHERE).split("\n")
+    assert lines[0] == "External interference" and lines[-1] == CM.SOLVED
+    # 4G interference keeps its own root cause
+    four = _analysis(TECHNICAL, "Interference", [_check("ul_rssi_dbm")])
+    assert CM.ticket_comment(four, **WHERE).split("\n")[1] == "Root cause: Interference"
+
+
+def test_service_recovered_only_once_the_availability_has_recovered():
+    up = _analysis(TECHNICAL, "Availability", [_check("cell_avail_pct", resolution=RESOLVED)])
+    lines = CM.ticket_comment(up, **WHERE).split("\n")
+    assert lines[0] == "service Recovered" and lines[1] == "Root cause: Availability"
+    assert lines[2].endswith("Since it was suffering from low availability.")
+    assert lines[3] == CM.SOLVED
+    # still down: no "service Recovered", the unresolved status
+    down = _analysis(TECHNICAL, "Availability",
+                     [_check("cell_avail_pct", resolution=NOT_RESOLVED, issue_hours=5)])
+    lines = CM.ticket_comment(down, **WHERE).split("\n")
+    assert "service Recovered" not in lines
+    assert lines[0] == "Root cause: Availability"
+    assert lines[1].endswith("Since it was suffering from low availability.")
+    assert lines[2] == ("The site issue still exists and not solved yet, the site suffering "
+                        "from low availability for 5 hours")
+    # not known to have recovered (no data after the window): no prefix either
+    unknown = _analysis(TECHNICAL, "Availability",
+                        [_check("cell_avail_pct", resolution=UNKNOWN)])
+    assert not CM.ticket_comment(unknown, **WHERE).startswith("service Recovered")
 
 
 def test_poor_coverage_at_the_user_location_is_the_root_cause():
