@@ -188,24 +188,26 @@ def test_a_sudden_spike_is_found_against_the_cells_own_normal_hours():
 
 
 def test_the_report_finds_a_flow_control_spike_the_threshold_misses(put_resource):
-    """At the configured 500,000 per 24 h, the NodeB that jumped from 20-40 to
-    100,000 is affected through its spike; the one always near 65,000 through
-    the threshold; the small jump and the calm NodeB are not."""
+    """At the configured 100,000 per hour, the NodeB that jumped from 20-40 to
+    600,000 is beyond it (and spiked); the one that jumped to exactly 100,000 is
+    affected through its spike alone; the one always near 65,000 an hour stays
+    under the hourly line — a daily total never decides — and the small jump and
+    the calm NodeB are not affected."""
     import _kpi_report as X
     put_resource("kpi", "SHAMS-3G.zip", _flow_export(), "3G KPI")
     ws = _ws("3G")
     ch = next(c for c in X.kpi_choices(ws) if c.column == FLOW)
-    assert ch.judged.how == "day_sum" and ch.judged.rule.critical == 500_000
+    assert ch.judged.how == "site_hour" and ch.judged.rule.critical == 100_000
     r = X._build(("flow",), ws, ch, "", (), "", (date(2026, 9, 8), date(2026, 9, 9)),
-                 500_000.0)
+                 100_000.0)
     c = r.cells.set_index("object_id")
-    assert set(r.affected["object_id"]) == {"Spiky_BAS0101", "Huge_BAS0102", "Chronic_BAS0103"}
+    assert set(r.affected["object_id"]) == {"Spiky_BAS0101", "Huge_BAS0102"}
     assert not c.loc["Spiky_BAS0101", "beyond"] and c.loc["Spiky_BAS0101", "spike"]
-    assert c.loc["Chronic_BAS0103", "beyond"] and not c.loc["Chronic_BAS0103", "spike"]
+    assert not c.loc["Chronic_BAS0103", "beyond"] and not c.loc["Chronic_BAS0103", "spike"]
     assert c.loc["Huge_BAS0102", "beyond"] and c.loc["Huge_BAS0102", "spike"]
-    assert list(r.top_sites()["site_id"]) == ["BAS0102", "BAS0101", "BAS0103"]
+    assert list(r.top_sites()["site_id"]) == ["BAS0102", "BAS0101"]
     assert "or showed a sudden spike" in r.description
-    assert r.per_day and len(r.trend) == 48                 # hourly, never folded into days
+    assert not r.per_day and len(r.trend) == 48             # hourly, never folded into days
 
 
 # --------------------------------------------------------------------------- #

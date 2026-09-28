@@ -248,7 +248,9 @@ def test_the_kpi_pages_judge_an_hour_two_files_share_once(put_resource):
     _, _, health = W.site_health(ws)
     flow = health.objects[health.objects["column"] == FLOW]
     assert len(flow) == 1                                     # one NodeB, once
-    assert flow["value"].iloc[0] == 9 * 5                     # 9 distinct hours × 5 drops
+    # judged hour by hour: 9 distinct hours of 5 drops, each counted once
+    assert flow["hours"].iloc[0] == 9 and flow["peak"].iloc[0] == 5
+    assert flow["value"].iloc[0] == 5 and flow["issue_hours"].iloc[0] == 0
 
     W, ws = _ws("4G")
     src, info = ws.usable[0]

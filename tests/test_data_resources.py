@@ -375,8 +375,7 @@ def test_the_data_resources_page_replace_preview_apply_and_active_data():
 
 
 @pytest.mark.parametrize("page", ["views/site_map.py", "views/kpi_analysis.py",
-                                  "views/kpi_draw.py", "views/complaint_analysis.py",
-                                  "views/dashboard.py"])
+                                  "views/kpi_draw.py", "views/complaint_analysis.py"])
 def test_no_other_page_uploads_anything(page):
     """Every upload is on the Data Resources page; the others read the active
     data and say nothing about it — no page carries a data monitor."""

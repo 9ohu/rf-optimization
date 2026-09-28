@@ -4,8 +4,8 @@ Two views on one page. Overview, top to bottom: the summary, tickets by
 engineer, sup district, governorate and ticket type (donuts whose legends filter
 the table), the key KPIs, the top sites, and the ticket table with every column
 of the uploaded file. Ticket Details: one ticket — clicked in the table, typed in
-the search or picked there — with its record, the NOC analysis, its KPI evidence
-charts over the whole period with the Correlation Window shaded, and its KPI
+the search or picked there — with its record, the NOC analysis, its KPI charts —
+every cell of the site — over the whole period with the Correlation Window shaded, and its KPI
 timeline (`_complaints`). A delay ticket is one whose SLA Status is
 sla_violation — the only delay the Daily Target records.
 """
@@ -28,7 +28,8 @@ CHART = ["#20BFFF", "#A78BFA", "#FB923C", "#22C55E", "#F472B6", "#FACC15", "#2DD
 ANALYSIS_COLS = ["Ticket ID", "MSISDN", "Site ID", "Site Name", "Site Tickets", "City",
                  "Sup District", "Governorate", "Engineer", "Problem Time", "Ticket Type",
                  "Delay", "KPI Issues", "KPI (window)", "RSRP", "Network Analysis", "Problem",
-                 "Site Issue", "Resolution", "Confidence"]
+                 "Site Issue", "Resolution", "Confidence", "Serving Sector", "Distance",
+                 "User Location", "Description"]
 DEFAULT_COLS = ["Ticket ID", "MSISDN", "Site ID", "Site Name", "City", "Sup District",
                 "Governorate", "Engineer", "Problem Time", "Ticket Type", "Delay", "SLA Status",
                 "KPI Issues", "Network Analysis", "Resolution"]
@@ -256,7 +257,7 @@ if ctx.tracks or ctx.inds:
     cells = ""
     for k in keys:
         d = tc[k]
-        with_data = n - d["nodata"]
+        with_data = d["critical"] + d["warning"] + d["normal"]
         sev = 2 if d["critical"] else 1 if d["warning"] else 0 if with_data else -1
         flag = "" if d["judged"] else "<i>context</i>"
         cells += (f'<div class="ca-tile" style="--c:{SEV_COLOUR[sev]}" '
@@ -418,7 +419,6 @@ with st.container(key="rf_card_ca_table", border=True):
     def _export_bytes(rows: pd.DataFrame) -> bytes:
         out = FULL.loc[rows.index].copy()
         out["Problem Time"] = out["Problem Time"].dt.strftime("%Y-%m-%d %H:%M")
-        out["Evidence"] = [ctx.analysis[i].evidence for i in rows["_i"]]
         out["Resolution Evidence"] = [ctx.analysis[i].resolution_evidence for i in rows["_i"]]
         out["Correlation Window"] = [ctx.analysis[i].window for i in rows["_i"]]
         buf = io.BytesIO()

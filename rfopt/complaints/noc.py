@@ -26,7 +26,8 @@ NAMES = {"AVA": "Availability", "PRB": "PRB utilisation", "INTER": "UL interfere
          "FLOW": "DL flow-control drops", "CSSR": "Call setup success",
          "IPL": "IP path RTT (IPPM)", "RTWP": "RTWP", "S1": "S1 signalling failures"}
 _CANON_TILE = {"cell_avail_pct": "AVA", "dl_prb_util": "PRB", "ul_prb_util": "PRB",
-               "ul_rssi_dbm": "INTER", "call_setup_sr": "CSSR", "ipmm_rtt_ms": "IPL"}
+               "ul_rssi_dbm": "INTER", "call_setup_sr": "CSSR", "ipmm_rtt_ms": "IPL",
+               "ul_rtwp_dbm": "RTWP", "dl_flowctrl_drops": "FLOW"}
 
 
 def _t(ts) -> str:
@@ -69,12 +70,12 @@ class IndicatorDef:
     ruleset: str | None
     canon: str | None
     unit: str
-    how: str            # worst: worst hour · count: failures summed · day_sum: 24 h total
+    how: str            # worst: worst hour · count: failures summed · site_hour: the site's hour
 
 
 INDICATORS = (
     IndicatorDef("FLOW", "3G DL flow-control drops", "3G", ("vs rscgroup flowctrol dl dropnum",),
-                 "UMTS", "dl_flowctrl_drops", "", "day_sum"),
+                 "UMTS", "dl_flowctrl_drops", "", "site_hour"),
     IndicatorDef("RTWP", "3G RTWP", "3G", ("vs meanrtwp dbm",), "UMTS", "ul_rtwp_dbm",
                  " dBm", "worst"),
     IndicatorDef("S1", "4G S1 signalling failures", "4G", ("s1 sig failures",), None, None,
@@ -97,7 +98,7 @@ def indicator_columns(columns, kind: str) -> list[tuple[str, IndicatorDef, objec
                     rule = load_thresholds(d.ruleset).rule(d.canon)
                 except Exception:
                     rule = None
-                if rule is None or rule.warning is None or rule.critical is None:
+                if rule is None or not rule.judged:
                     continue
             seen.add(d.key)
             out.append((col, d, rule))
@@ -163,7 +164,9 @@ def _threshold_text(d: IndicatorDef, rule) -> str:
     if rule is None:
         return "any failure in the window"
     op = "<" if rule.direction == "up" else ">"
-    per = " per 24 h" if d.how == "day_sum" else ""
+    per = " per hour" + (" at site level" if d.how == "site_hour" else "")
+    if rule.warning == rule.critical:
+        return f"Issue {op} {rule.critical:,g}{d.unit}{per}"
     return f"⚠ {op} {rule.warning:,g}{d.unit} · ● {op} {rule.critical:,g}{d.unit}{per}"
 
 
@@ -203,18 +206,6 @@ def observe_indicators(site_id, problem_time, indicators, window_h: float) -> li
                 c.note = f"peak {wv[j]:,.0f} at {_t(wt[j])}"
             else:
                 c.note = f"none in {c.hours} h"
-        elif d.how == "day_sum":
-            end = wt[-1]
-            day = np.asarray((t > end - pd.Timedelta(hours=24)) & (t <= end))
-            total = float(np.nansum(vals[day]))
-            n = int(day.sum())
-            c.value, c.at, c.value_text = total, end, fmt(total)
-            c.sev = severity(tr.rule, total)
-            c.state = state(c.sev)
-            if c.sev > 0:
-                c.observed = f"{_t(end - pd.Timedelta(hours=23))} – {_t(end + pd.Timedelta(hours=1))}"
-            c.note = (f"24 h total to {_t(end)}" + (f" ({n} h of data)" if n < 24 else "")
-                      + f" · window peak {wv[j]:,.0f} at {_t(wt[j])}")
         else:
             up = tr.rule.direction == "up"
             sev = np.array([severity(tr.rule, v) for v in wv])
@@ -384,16 +375,19 @@ def site_timeline(site_id, problem_time, tracks, window_h: float,
         if sid not in tr.by_site:
             continue
         seen = True
-        times, vals, objs = tr.by_site[sid]
-        idx = grid.get_indexer(pd.DatetimeIndex(times))
+        # the site's state each hour: its most severe cell that hour
+        h = tr.hourly(sid)
+        idx = grid.get_indexer(pd.DatetimeIndex(h["t"]))
         ok = idx >= 0
         s_tr = np.full(len(grid), -1, dtype=int)
         v_tr = np.full(len(grid), np.nan)
         o_tr = np.full(len(grid), "", dtype=object)
         if ok.any():
-            s = np.array([severity(tr.rule, v) for v in vals[ok]], dtype=int)
+            s = h["sev"].to_numpy()[ok].astype(int)
             np.maximum.at(sev, idx[ok], s)
-            s_tr[idx[ok]], v_tr[idx[ok]], o_tr[idx[ok]] = s, vals[ok], objs[ok]
+            s_tr[idx[ok]] = s
+            v_tr[idx[ok]] = h["v"].to_numpy()[ok]
+            o_tr[idx[ok]] = h["obj"].to_numpy()[ok]
             per.append((tr, s_tr, v_tr, o_tr))
     if not seen or (sev < 0).all():
         return None

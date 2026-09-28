@@ -60,13 +60,19 @@ def test_sites_are_judged_on_the_maps_rule_and_tdd_cells_on_their_own():
 
     s = summary(h.objects, h.tdd, h.sites, None)
     assert s["total"] == 2 and s["issues"] == 1 and s["prb"] == 1
-    # the sector's cells averaged (-112 dBm) are fine; its TDD cell alone is not
-    assert s["tdd"] == 1
+    # the TDD cell at -104 dBm is within its own TDD line (worse than -100 dBm)
+    assert s["tdd"] == 0
     assert s["flow"] is None and s["rtwp"] is None                 # not loaded: no data
     status = s["status"]
     assert status.loc["BAS0001", "state"] == "Critical"
     assert status.loc["BAS0001", "label"] == "4G DL PRB"
     assert status.loc["BAS0002", "state"] == "Normal"
+    # every cell is its own object; the site counts all of its cells
+    o = h.objects
+    assert set(o.loc[o["site_id"] == "BAS0001", "object_id"]) == {"L_A_BAS0001-1",
+                                                                   "L_A_BAS0001-2"}
+    assert (o["object_type"] == "Cell").all()
+    assert status.loc["BAS0001", "cells"] == 2 and status.loc["BAS0001", "cells_issue"] == 1
     assert s["distribution"]["Critical"] == 1 and s["distribution"]["Normal"] == 1
 
     rank = problem_ranking(h.objects)
@@ -76,15 +82,25 @@ def test_sites_are_judged_on_the_maps_rule_and_tdd_cells_on_their_own():
     only = summary(h.objects, h.tdd, h.sites, {"BAS0002"})
     assert only["total"] == 1 and only["issues"] == 0 and only["prb"] == 0
 
+    # the same TDD cell at -99 dBm breaches the TDD line, on its own
+    df = _lte()
+    df.loc[df["object"] == "T_B_BAS0002-1", INTER] = -99.0
+    h = build_health([("4G", df, judged)])
+    s = summary(h.objects, h.tdd, h.sites, None)
+    assert s["tdd"] == 1 and s["status"].loc["BAS0002", "state"] == "Critical"
+    inter = h.objects[(h.objects["key"] == "INTER") & (h.objects["site_id"] == "BAS0002")]
+    assert set(inter.loc[inter["sev"] > 0, "object_id"]) == {"T_B_BAS0002-1"}
 
-def test_flow_control_is_judged_per_24_hours_and_s1_is_only_counted():
+
+def test_flow_control_is_judged_per_site_and_hour_and_s1_is_only_counted():
     from _kpi_health import build_health, judged_columns, site_status, summary
 
     flow, rtwp, rtt = ("VS.RscGroup.FlowCtrol.DL.DropNum", "VS.MeanRTWP(dBm)",
                        "VS.IPPM.Rtt.Means(ms)")
     t = pd.date_range("2026-09-12 00:00", periods=48, freq="h")
     umts = pd.DataFrame({"datetime": t, "object": "N_BAS0003", "site_id": "BAS0003",
-                         "sector_id": "BAS0003-S0", flow: [100.0] * 24 + [3000.0] * 24,
+                         "sector_id": "BAS0003-S0", "level": "site",
+                         flow: [100.0] * 24 + [3000.0] * 23 + [150_000.0],
                          rtwp: -104.0, rtt: 2.0})
     lte = pd.DataFrame({"datetime": t, "object": "L_C_BAS0004-1", "site_id": "BAS0004",
                         "sector_id": "BAS0004-S1", "S1 SIG Failures": 1.0, AVA: 100.0})
@@ -93,12 +109,16 @@ def test_flow_control_is_judged_per_24_hours_and_s1_is_only_counted():
         ("4G", lte, judged_columns(["S1 SIG Failures", AVA], "4G"))])
     o = h.objects.set_index(["site_id", "key"])
 
-    # the day of 3,000 drops an hour: 72,000 > the 50,000-a-day warning line
-    assert o.loc[("BAS0003", "FLOW"), "value"] == 72000.0
-    assert o.loc[("BAS0003", "FLOW"), "state"] == "Warning"
+    # one hour of 150,000 drops: over the 100,000-an-hour line — every other hour
+    # is fine, and a daily total never decides
+    assert o.loc[("BAS0003", "FLOW"), "state"] == "Critical"
+    assert o.loc[("BAS0003", "FLOW"), "issue_hours"] == 1
+    assert o.loc[("BAS0003", "FLOW"), "peak"] == 150_000.0
     assert o.loc[("BAS0003", "FLOW"), "peak_time"] == pd.Timestamp("2026-09-13 23:00")
+    assert o.loc[("BAS0003", "FLOW"), "object_type"] == "NodeB"      # a site-level KPI
     assert o.loc[("BAS0003", "RTWP"), "state"] == "Normal"
-    assert o.loc[("BAS0003", "IPL"), "state"] == "Normal"
+    # IPPM RTT has no confirmed threshold: it is not judged at all
+    assert "IPL" not in set(h.objects["key"])
     assert o.loc[("BAS0004", "S1"), "state"] == "Detected"
     assert o.loc[("BAS0004", "S1"), "value"] == 48.0
 
@@ -119,13 +139,15 @@ def test_a_sites_tiles_and_hours_show_its_worst_object():
     primary, _ = site_tiles(h.objects, "BAS0001")
     assert [t["key"] for t in primary] == ["AVA", "PRB", "INTER", "FLOW"]
     tiles = {t["key"]: t for t in primary}
-    assert tiles["PRB"]["state"] == "Critical" and tiles["PRB"]["value"] == "90.0%"
-    assert tiles["PRB"]["object"] == "BAS0001-S1"
+    # the tile shows the worst hour of the site's cells: cell -2's one 99 % hour
+    assert tiles["PRB"]["state"] == "Critical" and tiles["PRB"]["value"] == "99.0%"
+    assert tiles["PRB"]["object"] == "L_A_BAS0001-2"
+    assert tiles["PRB"]["bad"] == 2                                # both cells have an issue hour
     assert tiles["FLOW"]["state"] == "No data"
 
     prb = site_hours(frames, "BAS0001").query("key == 'PRB'").set_index("hour")
     three = pd.Timestamp("2026-09-13 03:00")
-    assert prb.loc[three, "value"] == 99.0 and prb.loc[three, "object_id"] == "BAS0001-S2"
+    assert prb.loc[three, "value"] == 99.0 and prb.loc[three, "object_id"] == "L_A_BAS0001-2"
     assert (prb["sev"] == 2).all()
 
 
@@ -153,22 +175,24 @@ def test_issues_are_grouped_by_sup_district_and_city_with_a_half_window_trend():
     hp, hl = build_health(prev), build_health(last)
 
     sd = region_table(h.objects, regions, "Sup District")
-    assert list(sd["name"]) == ["Shat Al-Arab", "Zubair center", UNKNOWN]
-    assert area_counts(sd) == (1, 2)
+    # BAS0002's two cells breach in the afternoon: two cell checks, so it leads
+    assert list(sd["name"]) == ["Zubair center", "Shat Al-Arab", UNKNOWN]
+    assert area_counts(sd) == (2, 2)
     sd = add_trend(sd, hp.objects, hl.objects, regions, "Sup District").set_index("name")
     assert sd.loc["Shat Al-Arab", "affected"] == 1 and sd.loc["Shat Al-Arab", "critical"] == 1
     assert sd.loc["Shat Al-Arab", "top_issue"] == "4G DL PRB"
     assert sd.loc["Shat Al-Arab", "city"] == "Basrah center"
     assert sd.loc["Shat Al-Arab", "governorate"] == "Basrah"
-    # over the whole day BAS0002 averages 57.5 % PRB: fine, but it is new in the second half
-    assert sd.loc["Zubair center", "affected"] == 0 and sd.loc["Zubair center", "trend"] == 1.0
+    # BAS0002 averages 57.5 % PRB over the day, but its hours over 80 % are an
+    # issue; it is new in the second half
+    assert sd.loc["Zubair center", "affected"] == 1 and sd.loc["Zubair center", "trend"] == 1.0
     assert sd.loc["Shat Al-Arab", "trend"] == 0.0
 
     gov = region_table(h.objects, regions, "Governorate").set_index("name")
-    assert gov.loc["Basrah", "sites"] == 3 and gov.loc["Basrah", "affected"] == 1
-    assert round(float(gov.loc["Basrah", "rate"]), 1) == 33.3
+    assert gov.loc["Basrah", "sites"] == 3 and gov.loc["Basrah", "affected"] == 2
+    assert round(float(gov.loc["Basrah", "rate"]), 1) == 66.7
     city = region_table(h.objects, regions, "City").set_index("name")
-    assert city.loc["Basrah center", "affected"] == 1 and city.loc["Zubair", "affected"] == 0
+    assert city.loc["Basrah center", "affected"] == 1 and city.loc["Zubair", "affected"] == 1
 
     t = overall_trend(hp.objects, hl.objects, regions)
     assert t["affected"] == 1 and t["Sup District"] == 1 and t["City"] == 1
@@ -216,7 +240,7 @@ def _export_on_disk(tmp_path, monkeypatch):
         t = f"2026-09-13 {hh:02d}:00"
         lines.append(f"{t},Alpha_BAS0001,CELL_FDD,L_Alpha_BAS0001-1,1,90,-118,100\n")
         lines.append(f"{t},Alpha_BAS0001,CELL_FDD,L_Alpha_BAS0001-2,2,30,-118,100\n")
-        lines.append(f"{t},Beta_BAS0002,CELL_TDD,T_Beta_BAS0002-1,1,20,-104,100\n")
+        lines.append(f"{t},Beta_BAS0002,CELL_TDD,T_Beta_BAS0002-1,1,20,-99,100\n")
     # the export is the Current KPI Data of Data Resources, as the pages read it
     from rfopt.resources import store
     f = store.put_file("R5 4G Monitoring Hourly KPI.csv", "".join(lines).encode("utf-8"))
@@ -313,7 +337,7 @@ def test_the_overview_filters_every_panel_at_once(tmp_path, monkeypatch):
 
     # the picked row opens its site's KPI details
     at.session_state["ka_sel"] = "BAS0001"
-    at.session_state["ka_sel_obj"] = "BAS0001-S1"
+    at.session_state["ka_sel_obj"] = "L_Alpha_BAS0001-1"             # a cell row
     at.session_state["ka_sel_kpi"] = "4G DL PRB"
     at.run()
     assert not at.exception, at.exception

@@ -1,10 +1,17 @@
 """Daily Target tickets against the network, around the problem time.
 
 For each ticket: its site's hourly KPIs from the loaded exports, judged on the
-operator's own thresholds (config/thresholds_*.yaml), inside the problem time
-± a configurable window; what the site looked like just before and after; and
-a conclusion that never claims more than the data shows. A site with several
-cells is judged on its worst cell in each hour.
+thresholds with a documented source (config/THRESHOLD_SOURCES.md) — the main
+KPIs: 4G High PRB, Availability, UL interference (FDD / TDD lines); 3G Flow
+Control (per site and hour), Availability, RTWP — inside the problem time ± a
+configurable window; what the site looked like just before, and every hour
+after the window to the end of the KPI data (the resolution); and a conclusion
+that never claims more than the data shows.
+
+Every cell of the site is analysed, each hourly value on its own: a KPI's
+state is its worst cell-hour, and the check names every cell it read and every
+cell that breached. A KPI the export measures per site (a NodeB counter, flow
+control) is analysed per site — never spread over cells.
 
 Conclusions: Technical Issue (a critical breach in the window), Possible
 Technical Issue (warning level only), No Network Issue Detected (every judged
@@ -21,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 from rfopt.ingest.hourly_kpi import _KPI_MAP, _KPI_MAP_3G, _norm
-from rfopt.kpi.thresholds import load_thresholds
+from rfopt.kpi.thresholds import hourly_severity, load_thresholds
 from rfopt.kpi.trends import agg_how
 
 TECHNICAL = "Technical Issue"
@@ -43,16 +50,23 @@ _LABEL = {"cell_avail_pct": "Availability", "ul_rssi_dbm": "UL interference",
           "dl_prb_util": "DL PRB", "ul_prb_util": "UL PRB",
           "call_setup_sr": "CSSR", "erab_drop_rate": "Drop rate",
           "dl_user_thr_mbps": "DL throughput", "ul_user_thr_mbps": "UL throughput",
-          "ho_sr": "HO success", "ipmm_rtt_ms": "IP RTT"}
+          "ho_sr": "HO success", "ipmm_rtt_ms": "IP RTT", "ul_rtwp_dbm": "RTWP",
+          "dl_flowctrl_drops": "DL flow-control drops"}
 _UNIT = {"cell_avail_pct": "%", "ul_rssi_dbm": " dBm", "dl_prb_util": "%",
          "ul_prb_util": "%", "call_setup_sr": "%", "erab_drop_rate": "%",
          "dl_user_thr_mbps": " Mbps", "ul_user_thr_mbps": " Mbps", "ho_sr": "%",
-         "ipmm_rtt_ms": " ms"}
+         "ipmm_rtt_ms": " ms", "ul_rtwp_dbm": " dBm", "dl_flowctrl_drops": ""}
 _PROBLEM = {"cell_avail_pct": "Availability", "ul_rssi_dbm": "Interference",
             "dl_prb_util": "Congestion", "ul_prb_util": "Congestion",
             "call_setup_sr": "Accessibility", "erab_drop_rate": "Retainability",
             "dl_user_thr_mbps": "Throughput", "ul_user_thr_mbps": "Throughput",
-            "ho_sr": "Mobility", "ipmm_rtt_ms": "Transport latency"}
+            "ho_sr": "Mobility", "ipmm_rtt_ms": "Transport latency",
+            "ul_rtwp_dbm": "Interference", "dl_flowctrl_drops": "Flow control"}
+# the main KPIs — they lead every analysis
+MAIN = ("dl_prb_util", "ul_prb_util", "cell_avail_pct", "ul_rssi_dbm", "ul_rtwp_dbm",
+        "dl_flowctrl_drops")
+# judged per site and hour whatever the export's level: the cells' drops added up
+SITE_HOUR = ("dl_flowctrl_drops",)
 _GOV_KEYS = (("Basrah", ("basra",)),
              ("Samawa", ("samawa", "muthanna")),
              ("Nassriya", ("nassir", "nasir", "thaiqar", "thi qar", "dhi qar", "thiqar")),
@@ -83,8 +97,9 @@ def local_time(values) -> pd.Series:
 
 
 def judged_kpis(kpis, kind: str) -> list[tuple[str, str, object]]:
-    """(column, canonical name, rule) for the KPIs the thresholds can judge:
-    a threshold is set, and the KPI is a rate or level (not a total)."""
+    """(column, canonical name, rule) for the KPIs the thresholds can judge: a
+    line with a documented source, on a rate or level (not a total) — or flow
+    control, judged per site and hour."""
     table = _KPI_MAP_3G if kind == "3G" else _KPI_MAP
     try:
         rules = load_thresholds(_RULESET.get(kind, "LTE"))
@@ -93,14 +108,15 @@ def judged_kpis(kpis, kind: str) -> list[tuple[str, str, object]]:
     out, seen = [], set()
     for k in kpis:
         canon = table.get(_norm(k))
-        if not canon or canon in seen or agg_how(k) != "mean":
+        if not canon or canon in seen or (agg_how(k) != "mean" and canon not in SITE_HOUR):
             continue
         rule = rules.rule(canon)
-        if rule is None or rule.warning is None or rule.critical is None:
+        if rule is None or not rule.judged:
             continue
         seen.add(canon)
         out.append((k, canon, rule))
-    return out
+    # the main KPIs first
+    return sorted(out, key=lambda x: x[1] not in MAIN)
 
 
 def severity(rule, value) -> int:
@@ -121,7 +137,34 @@ class KpiTrack:
     source: str
     start: pd.Timestamp
     end: pd.Timestamp
-    by_site: dict = field(default_factory=dict)   # site -> (times, values, worst cell)
+    # site -> (times, values, objects): every cell-hour of the site (a site-hour
+    # for a site-level KPI), sorted by time
+    by_site: dict = field(default_factory=dict)
+    duplex: dict = field(default_factory=dict)    # site -> each row's duplex (UL interference)
+    level: str = "cell"                           # "site" for a KPI judged per site
+
+    def sev(self, site) -> np.ndarray:
+        """Each row's state, every hourly value on its own line."""
+        _, vals, _ = self.by_site[site]
+        return hourly_severity(self.rule, vals, self.duplex.get(site))
+
+    def hourly(self, site) -> pd.DataFrame:
+        """Per hour: the most severe row of the site that hour (then the most
+        extreme value) — the hour's state, for a timeline or a before / after."""
+        times, vals, objs = self.by_site[site]
+        up = self.rule.direction == "up"
+        d = pd.DataFrame({"t": pd.DatetimeIndex(times), "v": np.asarray(vals, dtype=float),
+                          "obj": objs, "sev": self.sev(site)})
+        d["_r"] = d["v"] if up else -d["v"]
+        return (d.sort_values(["t", "sev", "_r"], ascending=[True, False, True], kind="stable")
+                .drop_duplicates("t").drop(columns="_r").reset_index(drop=True))
+
+    def only(self, key, as_key=None):
+        """This track for one site (or sector) alone, keyed `as_key`."""
+        import dataclasses
+        k = as_key or key
+        return dataclasses.replace(self, by_site={k: self.by_site[key]},
+                                   duplex={k: self.duplex.get(key)})
 
     @property
     def label(self) -> str:
@@ -134,12 +177,21 @@ class KpiTrack:
     @property
     def threshold(self) -> str:
         op = "<" if self.rule.direction == "up" else ">"
+        if self.rule.warning == self.rule.critical:
+            text = f"Issue {op} {self.rule.critical:g}{self.unit} per hour"
+            if self.canon == "ul_rssi_dbm":
+                text += " (FDD; TDD > -100 dBm)"
+            return text + (" at site level" if self.level == "site" else "")
         return (f"warning {op} {self.rule.warning:g}{self.unit}, "
                 f"critical {op} {self.rule.critical:g}{self.unit}")
 
 
 def build_tracks(frames) -> list[KpiTrack]:
-    """frames: (kind, source name, frame from load_hourly_raw, judged_kpis)."""
+    """frames: (kind, source name, frame from load_hourly_raw, judged_kpis).
+
+    Every row is kept — each cell's own hour, never reduced to a worst cell. A
+    site-level KPI (flow control) becomes one row per site and hour, the
+    site's cells added up; a KPI the export measures per site stays as it is."""
     tracks = []
     for kind, source, df, judged in frames:
         if df is None or df.empty:
@@ -147,19 +199,26 @@ def build_tracks(frames) -> list[KpiTrack]:
         for col, canon, rule in judged:
             if col not in df.columns:
                 continue
-            d = df.loc[df[col].notna(), ["site_id", "datetime", "object", col]]
+            cols = ["site_id", "datetime", "object", col] + (
+                ["duplex"] if "duplex" in df.columns else [])
+            d = df.loc[df[col].notna() & df["site_id"].notna(), cols]
             if d.empty:
                 continue
             d = d.assign(site_id=d["site_id"].astype(str).str.upper())
-            g = d.groupby(["site_id", "datetime"], sort=True)[col]
-            pick = g.idxmin() if rule.direction == "up" else g.idxmax()
-            w = d.loc[pick.to_numpy()].sort_values(["site_id", "datetime"])
+            level = "site" if canon in SITE_HOUR else "cell"
+            if level == "site":
+                d = (d.groupby(["site_id", "datetime"], sort=True)[col].sum().reset_index()
+                     .assign(object=lambda x: x["site_id"]))
+            d = d.sort_values(["site_id", "datetime", "object"], kind="stable")
             tr = KpiTrack(col, canon, kind, rule, source,
-                          pd.Timestamp(d["datetime"].min()), pd.Timestamp(d["datetime"].max()))
-            for site, part in w.groupby("site_id", sort=False):
+                          pd.Timestamp(d["datetime"].min()), pd.Timestamp(d["datetime"].max()),
+                          level=level)
+            for site, part in d.groupby("site_id", sort=False):
                 tr.by_site[site] = (part["datetime"].to_numpy(),
                                     part[col].to_numpy(dtype=float),
                                     part["object"].astype(str).to_numpy())
+                tr.duplex[site] = (part["duplex"].astype(str).to_numpy()
+                                   if "duplex" in part.columns else None)
             tracks.append(tr)
     return tracks
 
@@ -188,6 +247,8 @@ class KpiCheck:
     worst: float | None = None
     worst_at: pd.Timestamp | None = None
     worst_obj: str = ""
+    cells: list = field(default_factory=list)       # every cell the check read in the window
+    bad_cells: list = field(default_factory=list)   # the ones with an issue hour in it
     breach_span: str = ""
     before: str = ""
     after: str = ""
@@ -242,41 +303,48 @@ def analyse_ticket(site_id, problem_time, tracks, window_h: float) -> TicketAnal
         if not win.any():
             checks.append(c)
             continue
-        wv, wt, wo = vals[win], t[win], objs[win]
-        sev = np.array([severity(tr.rule, v) for v in wv])
-        c.hours, c.breach_hours, c.sev = int(win.sum()), int((sev > 0).sum()), int(sev.max())
+        sev_all = tr.sev(sid)
+        wv, wt, wo, ws = vals[win], t[win], objs[win], sev_all[win]
+        c.hours = int(pd.DatetimeIndex(wt).nunique())
+        c.breach_hours = int(pd.DatetimeIndex(wt[ws > 0]).nunique())
+        c.sev = int(ws.max())
         c.status = ("OK", "Warning", "Critical")[c.sev]
-        j = int(np.argmin(wv)) if tr.rule.direction == "up" else int(np.argmax(wv))
+        c.cells = sorted(set(wo.tolist()))
+        c.bad_cells = sorted(set(wo[ws > 0].tolist()))
+        # the worst cell-hour: the most severe, then the most extreme value
+        rank = wv if tr.rule.direction == "up" else -wv
+        j = int(np.lexsort((rank, -ws))[0])
         c.worst, c.worst_at, c.worst_obj = float(wv[j]), wt[j], str(wo[j])
         if c.breach_hours:
-            bt = wt[sev > 0]
+            bt = pd.DatetimeIndex(sorted(set(wt[ws > 0])))
             c.breach_span = f"{_t(bt[0])}–{(bt[-1] + pd.Timedelta(hours=1)):%H:%M}"
-        before = np.asarray((t >= lo - pd.Timedelta(hours=6)) & (t < lo))
-        if before.any():
-            bsev = max(severity(tr.rule, v) for v in vals[before])
-            c.before = ("already breaching before the window" if bsev
-                        else f"normal before ({_v(vals[before][-1], tr.unit)})")
+        h = tr.hourly(sid)                   # the site's state hour by hour
+        before = h[(h["t"] >= lo - pd.Timedelta(hours=6)) & (h["t"] < lo)]
+        if len(before):
+            c.before = ("already breaching before the window" if (before["sev"] > 0).any()
+                        else f"normal before ({_v(before['v'].iloc[-1], tr.unit)})")
         else:
             c.before = "no data before the window"
-        after = np.asarray(t > hi)
-        if after.any():
-            av, at = vals[after], t[after]
-            asev = np.array([severity(tr.rule, v) for v in av])
+        # the resolution: every hour after the window, to the end of the KPI data
+        after = h[h["t"] > hi]
+        if len(after):
+            av, at, asev = (after["v"].to_numpy(), pd.DatetimeIndex(after["t"]),
+                            after["sev"].to_numpy())
             c.after = f"{_v(av[-1], tr.unit)} at {_t(at[-1])}"
             if c.sev > 0:
+                n_bad = int((asev > 0).sum())
+                seen = (f"{n_bad} issue hour{'s' if n_bad != 1 else ''} in the {len(asev)} h "
+                        f"after the window, to the end of the data ({_t(at[-1])})")
                 if asev[-1] > 0:
                     c.resolution = NOT_RESOLVED
                     c.resolution_note = (f"still {'critical' if asev[-1] == 2 else 'in warning'} "
-                                         f"at {_t(at[-1])} ({_v(av[-1], tr.unit)})")
-                elif len(asev) >= 2 and not asev[-2:].any():
+                                         f"at {_t(at[-1])} ({_v(av[-1], tr.unit)}) — {seen}")
+                else:
                     bad = np.flatnonzero(asev > 0)
                     since = at[bad[-1] + 1] if bad.size else at[0]
                     c.resolution = RESOLVED
-                    c.resolution_note = (f"back within threshold from {_t(since)}, "
-                                         f"stable to {_t(at[-1])}")
-                else:
-                    c.resolution = UNKNOWN
-                    c.resolution_note = "too little data after the window to tell"
+                    c.resolution_note = (f"back within threshold from {_t(since)} to the end "
+                                         f"of the data — {seen}")
         else:
             c.after = "no data after the window"
             if c.sev > 0:
@@ -291,7 +359,8 @@ def analyse_ticket(site_id, problem_time, tracks, window_h: float) -> TicketAnal
         return _insufficient(f"The KPI exports ({_t(start)} → {_t(end)}) do not cover "
                              f"the complaint window", window, checks)
 
-    ordered = sorted(judged, key=lambda c: (-c.sev, -c.breach_hours))
+    # the main KPIs lead, then the most hours in breach
+    ordered = sorted(judged, key=lambda c: (-c.sev, c.canon not in MAIN, -c.breach_hours))
     summary = " · ".join(
         f"{c.label} {_v(c.worst, c.unit)}" + (" ✗" if c.sev == 2 else " ⚠" if c.sev == 1 else "")
         for c in ordered[:3])
@@ -326,6 +395,7 @@ def analyse_ticket(site_id, problem_time, tracks, window_h: float) -> TicketAnal
     evidence = "; ".join(
         f"{c.label} {c.status.lower()} {_v(c.worst, c.unit)}"
         + (f" on {c.worst_obj}" if c.worst_obj else "")
+        + (f" ({len(c.bad_cells)} of {len(c.cells)} cells)" if len(c.cells) > 1 else "")
         + f" at {c.breach_span} ({c.threshold})"
         + (", already breaching before" if c.before.startswith("already") else "")
         for c in lead[:3])

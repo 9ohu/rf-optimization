@@ -131,7 +131,7 @@ def sniff(src):
     return R.kpi_info(src) if isinstance(src, str) else _sniff_buffer(src)
 
 
-@st.cache_resource(show_spinner="Reading the objects in the file…",
+@st.cache_resource(show_spinner=False,
                    hash_funcs=SRC_HASH)
 def _index_buffer(src):
     if hasattr(src, "seek"):
@@ -139,7 +139,7 @@ def _index_buffer(src):
     return load_hourly_raw(src, [])
 
 
-@st.cache_resource(show_spinner="Combining the KPI files…", max_entries=4)
+@st.cache_resource(show_spinner=False, max_entries=4)
 def _combined_index(paths: tuple):
     return merge_hourly([R.kpi_index(p) for p in paths])
 
@@ -151,7 +151,7 @@ def index_of(src):
     return R.kpi_index(src) if isinstance(src, str) else _index_buffer(src)
 
 
-@st.cache_resource(show_spinner="Reading the selected KPIs…",
+@st.cache_resource(show_spinner=False,
                    hash_funcs=SRC_HASH)
 def _raw(src, kpis: tuple):
     # an upload is one buffer read several times in a run (objects, site
@@ -161,7 +161,7 @@ def _raw(src, kpis: tuple):
     return load_hourly_raw(src, list(kpis))
 
 
-@st.cache_resource(show_spinner="Reading the selected KPIs from the KPI files…",
+@st.cache_resource(show_spinner=False,
                    max_entries=12)
 def _combined_raw(paths: tuple, kpis: tuple):
     """The KPIs out of each file that has them, as one export. A file with none
@@ -196,13 +196,13 @@ def src_key(src) -> tuple:
         return (str(src), 0.0)
 
 
-@st.cache_resource(show_spinner="Judging the sites on the operator's thresholds…",
+@st.cache_resource(show_spinner=False,
                    max_entries=4)
 def health(key: tuple, _frames):
     return build_health(_frames)
 
 
-@st.cache_resource(show_spinner="Comparing the two halves of the window…", max_entries=4)
+@st.cache_resource(show_spinner=False, max_entries=4)
 def health_halves(key: tuple, _frames, start, end):
     """Site health over the window's first and second half, or None."""
     from _kpi_region import halves
@@ -231,7 +231,7 @@ def _first(values) -> str:
     return ""
 
 
-@st.cache_resource(show_spinner="Reading the EP tracker…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def site_table(path: str) -> pd.DataFrame:
     ep = load_ep_all(path)
     if ep is None or ep.empty or "site_id" not in ep.columns:
@@ -316,7 +316,7 @@ def object_cells(ws) -> pd.DataFrame:
     return _object_cells(key, ws.index, ids)
 
 
-@st.cache_resource(show_spinner="Preparing the KPI table…", max_entries=12)
+@st.cache_resource(show_spinner=False, max_entries=12)
 def table_rows(key: tuple, _objects, _regions, _names, _cells, display: bool = True):
     """The judged rows with what the Overview filters and shows (`_kpi_filters`)."""
     from _kpi_filters import enrich

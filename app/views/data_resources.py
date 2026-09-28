@@ -154,7 +154,7 @@ def _drop_page_caches() -> None:
     """Whatever a page keeps of the data it read before is dropped, so every
     page reads the newly applied data on its next run."""
     for key in ("kpi_drawn", "kpi_trend_xlsx", "ka_sel", "ka_sel_obj", "ka_sel_kpi",
-                "rx_out_pptx", "rx_out_xlsx", "wl_df", "ca_sel_tid"):
+                "rx_out_pptx", "rx_out_xlsx", "ca_sel_tid"):
         ss.pop(key, None)
 
 

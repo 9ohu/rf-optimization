@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import yaml
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
@@ -38,6 +41,12 @@ class ThresholdRule:
     min_traffic_gb: float = 0.0
     unit: str = ""
     note: str = ""
+    source: str = ""          # where the line comes from; empty = not confirmed
+
+    @property
+    def judged(self) -> bool:
+        """Only a line with a documented source decides an Issue."""
+        return bool(self.source) and self.warning is not None and self.critical is not None
 
     def evaluate(self, value: float) -> Severity:
         if value is None or value != value:      # NaN
@@ -85,6 +94,7 @@ class ThresholdSet:
                 min_traffic_gb=vals.get("min_traffic_gb", base.min_traffic_gb),
                 unit=base.unit,
                 note=base.note,
+                source=base.source,
             )
         return ThresholdSet(self.technology, new, self.guard_traffic_gb,
                             self.guard_min_rows)
@@ -99,6 +109,59 @@ class ThresholdSet:
             }
             for r in self.rules.values()
         ]
+
+
+def judged_rule(kpi: str, technology: str = "LTE") -> ThresholdRule | None:
+    """The rule a KPI is judged on, or None when its line has no documented
+    source (then the KPI is shown, never judged)."""
+    rule = load_thresholds(technology).rule(kpi)
+    return rule if rule is not None and rule.judged else None
+
+
+TDD = "CELL_TDD"
+
+
+@lru_cache(maxsize=1)
+def _tdd_rule() -> ThresholdRule | None:
+    tdd = load_thresholds("LTE").rule("ul_rssi_tdd_dbm")
+    return tdd if tdd is not None and tdd.judged else None
+
+
+def rule_for_duplex(rule: ThresholdRule | None, duplex) -> ThresholdRule | None:
+    """UL interference has its own line on a TDD cell (`ul_rssi_tdd_dbm`)."""
+    if rule is None or rule.kpi != "ul_rssi_dbm" or str(duplex).strip().upper() != TDD:
+        return rule
+    return _tdd_rule() or rule
+
+
+def _sev(rule: ThresholdRule, v: np.ndarray) -> np.ndarray:
+    out = np.zeros(v.shape, dtype=np.int64)
+    if rule.direction == "up":
+        if rule.warning is not None:
+            out[v < rule.warning] = 1
+        if rule.critical is not None:
+            out[v < rule.critical] = 2
+    else:
+        if rule.warning is not None:
+            out[v > rule.warning] = 1
+        if rule.critical is not None:
+            out[v > rule.critical] = 2
+    return out
+
+
+def hourly_severity(rule: ThresholdRule, values, duplex=None) -> np.ndarray:
+    """0 normal / 1 warning / 2 critical for every hourly value on its own —
+    never an average. A missing value is 0. With `duplex`, a TDD cell's UL
+    interference is read against the TDD line."""
+    v = np.asarray(values, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        out = _sev(rule, v)
+        if duplex is not None and rule.kpi == "ul_rssi_dbm" and _tdd_rule() is not None:
+            tdd = np.asarray(pd.Series(duplex).astype(str).str.strip().str.upper() == TDD)
+            if tdd.any():
+                out[tdd] = _sev(_tdd_rule(), v[tdd])
+    out[~np.isfinite(v)] = 0
+    return out
 
 
 def load_thresholds(
@@ -130,6 +193,7 @@ def load_thresholds(
             min_traffic_gb=(spec or {}).get("min_traffic_gb", 0.0),
             unit=(d.unit if d else (spec or {}).get("unit", "")),
             note=(spec or {}).get("note", ""),
+            source=str((spec or {}).get("source") or ""),
         )
 
     ts = ThresholdSet(

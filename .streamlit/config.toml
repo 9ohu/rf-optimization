@@ -9,6 +9,10 @@ runOnSave = false
 # itself, so the maps never wait on an outside CDN (slow on VPN)
 enableStaticServing = true
 
+[client]
+# no Deploy button and no ⋮ menu: nothing but the app itself
+toolbarMode = "minimal"
+
 [browser]
 gatherUsageStats = false
 

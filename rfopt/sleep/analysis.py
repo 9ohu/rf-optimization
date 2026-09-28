@@ -4,21 +4,30 @@ A ticket was put to sleep because the issue was not fixed at the time: a cell
 was full, a site was not built yet, a place had no coverage. This module takes
 those tickets and asks the network what it says *now*.
 
-Nothing here decides anything on a closure code alone. Each ticket names a
-serving sector (column FB), and the check that fits its closure code is run
-against measured data:
+**Why the ticket slept** comes from three fields of the history: RF Analysis
+(FE), Closure Code (BQ) and Diagnostic Comment (BS). Where they agree they
+name the problem; where they conflict the Diagnostic Comment wins — it is the
+engineer's written explanation (`reason_of`). A comment that says the issue is
+not technical makes the ticket **Not Technical**: no KPI check is forced on it.
+A comment that asks for a drive test (DT) makes it a coverage case.
 
-- high utilization / traffic  -> the sector's own hourly PRB utilization;
-- high flow control          -> the site's flow-control counter (3G);
-- interference               -> the sector's hourly UL interference;
-- weak coverage / indoor     -> the measured RSRP where the subscriber was;
-- a planned site             -> whether that site (column BP) is on air, then
-                                the coverage at the subscriber's point.
+**The check that fits the reason** is then run against measured data:
 
-The lines drawn are the operator's own (`config/thresholds_lte.yaml`), never a
-number invented here, and a check with nothing behind it answers "Not Checked"
-rather than guessing. Every description is written from the values the check
-actually read.
+- coverage (weak coverage, Not Within Plan, indoor / deep indoor, a drive
+  test, a planned site that is about coverage) -> the RSRP of the RSRP grid
+  cell at the subscriber's location; no grid there is poor coverage. The
+  planned site's status is shown, never the verdict.
+- high utilization / load (a planned site meant to take load too) -> the
+  serving sector's PRB, every cell, hour by hour;
+- flow control -> the site's flow-control drops, hour by hour (3G, per site);
+- interference -> the serving sector's UL interference (every cell, on its FDD
+  or TDD line) and the site's 3G RTWP, hour by hour.
+
+A technical check reads the **whole loaded KPI period** (not a window around
+the problem time), each hourly value on its own line (config/THRESHOLD_SOURCES.md),
+on the serving sector only; the other main KPIs are read beside it. A check
+with nothing behind it answers "Not Checked" rather than guessing. Every
+description is written from the values the check actually read.
 """
 
 from __future__ import annotations
@@ -42,6 +51,7 @@ CLOSURE_CODES = (
 )
 
 SOLVE, NOT_SOLVE, NOT_CHECKED = "Solve", "Not Solve", "Not Checked"
+NOT_TECHNICAL = "Not Technical"
 ON_AIR, NOT_ON_AIR = "On Air", "Still Not On Air"
 
 # the check each closure code asks for
@@ -77,7 +87,7 @@ RTWP = "rtwp_dbm"                          # the 3G one, beside 4G's ul_rssi_dbm
 
 # the KPI a check is judged on, and what an engineer calls it
 CHECK_KPI = {"utilization": PRB, "interference": RSSI, "flow_control": FLOW,
-             "coverage": PRB, "planned": PRB}
+             "coverage": PRB, "planned": PRB, "not_technical": PRB}
 KPI_NAME = {PRB: "PRB Utilization", RSSI: "UL Interference", AVAIL: "Availability",
             USERS: "Connected Users", THR: "DL User Throughput", FLOW: "Flow Control",
             RTWP: "RTWP"}
@@ -204,11 +214,63 @@ def is_planned(closure_code: str) -> bool:
     return CODE_CHECK.get(str(closure_code)) == "planned"
 
 
-def check_of(closure_code, rf_analysis) -> str:
-    """Which check a ticket asks for: its RF Analysis where that names one,
-    else the closure code it was put to sleep under."""
-    rf = RF_CHECK.get(str(rf_analysis or "").strip().lower())
-    return rf or CODE_CHECK.get(str(closure_code), "")
+# what a Diagnostic Comment says, in the words engineers write. Not technical:
+# the existing list of non-RF causes (`complaints.worklist._C_NOTRF`), with
+# "not technical" itself; the rest name the checks the RF Analysis names.
+_C_NOT_TECH = re.compile(r"\b(not? (?:an? )?technical|non[- ]?technical|not connected|no issue|ps side|"
+                         r"core side|sim|device|handset|barred|provision\w*|charging|package|"
+                         r"balance|switched? off)\b", re.I)
+_C_DT = re.compile(r"\b(dt|drive[- ]?test\w*)\b", re.I)
+_C_CHECKS = (
+    ("flow_control", re.compile(r"\bflow[- ]?contro\w*", re.I)),
+    ("interference", re.compile(r"\b(interfe\w*|rtwp|jamm\w*|noise)\b", re.I)),
+    ("utilization", re.compile(r"\b(congest\w*|utili[sz]\w*|prb|high traffic|overload\w*|"
+                               r"capacity|load)\b", re.I)),
+    ("coverage", re.compile(r"\b(weak|coverage|indoor|in-?building|basement|rsrp|"
+                            r"no signal|poor signal)\b", re.I)),
+    ("planned", re.compile(r"\b(planned? site|new site|new tower|nomination|"
+                           r"will be on ?air)\b", re.I)),
+)
+_LOAD = re.compile(r"\b(congest\w*|utili[sz]\w*|prb|high traffic|overload\w*|capacity|load)\b",
+                   re.I)
+
+
+def comment_check(comment) -> str:
+    """The check a Diagnostic Comment names: "not_technical", "coverage" for a
+    drive test, one of the checks, or "" when it names none."""
+    text = str(comment or "")
+    if not text.strip():
+        return ""
+    if _C_NOT_TECH.search(text):
+        return "not_technical"
+    if _C_DT.search(text):
+        return "coverage"
+    for check, pattern in _C_CHECKS:
+        if pattern.search(text):
+            return check
+    return ""
+
+
+def reason_of(closure_code, rf_analysis, comment=None) -> tuple[str, str]:
+    """(the check, the field that decided it). The Diagnostic Comment first —
+    it is the written explanation and wins a conflict — then the RF Analysis,
+    then the Closure Code. A planned-site reason is a coverage case unless the
+    comment or the RF Analysis says it is about load."""
+    by_comment = comment_check(comment)
+    by_rf = RF_CHECK.get(str(rf_analysis or "").strip().lower(), "")
+    by_code = CODE_CHECK.get(str(closure_code), "")
+    check, source = ((by_comment, "Diagnostic Comment") if by_comment
+                     else (by_rf, "RF Analysis") if by_rf
+                     else (by_code, "Closure Code") if by_code else ("", ""))
+    if check == "planned":
+        load = by_rf == "utilization" or bool(_LOAD.search(str(comment or "")))
+        check = "utilization" if load else "coverage"
+    return check, source
+
+
+def check_of(closure_code, rf_analysis, comment=None) -> str:
+    """Which check a ticket asks for (`reason_of`)."""
+    return reason_of(closure_code, rf_analysis, comment)[0]
 
 
 def wake_after(expected, today=None) -> float:
@@ -233,10 +295,15 @@ def sleep_population(history: pd.DataFrame, *, today=None) -> pd.DataFrame:
     df["site"] = [s for s, _ in split]
     df["sector_num"] = [n for _, n in split]
     df["serving"] = [f"{s}-{n:g}" if s else "" for s, n in split]
-    df["check"] = [check_of(c, r) for c, r in zip(df["closure_code"], df["rf_analysis"])]
+    comments = df["comment"] if "comment" in df.columns else pd.Series("", index=df.index)
+    why = [reason_of(c, r, m) for c, r, m in zip(df["closure_code"], df["rf_analysis"],
+                                                   comments)]
+    df["check"] = [c for c, _ in why]
+    df["reason_from"] = [w for _, w in why]
     # column BP names a site on nearly every ticket; it is the *planned* site
     # only where the ticket is about one, so it is carried only there
-    planned = df["check"].eq("planned")
+    planned = (df["closure_code"].map(is_planned)
+               | df["rf_analysis"].astype(str).str.strip().str.lower().eq("new site required"))
     df["plan_site"] = df["planned_site"].astype(str).str.strip().str.upper().where(planned, "")
     df["wake_after"] = df["expected"].map(lambda v: wake_after(v, today))
     return df.reset_index(drop=True)
@@ -251,8 +318,9 @@ class Stat:
     top: float = float("nan")          # the highest hour
     mean: float = float("nan")
     low: float = float("nan")          # the lowest hour
-    over: int = 0                      # hours at or past the critical line
+    over: int = 0                      # hours with an issue: any cell past its line that hour
     worst: float = float("nan")        # the end this KPI goes bad towards
+    hours_set: frozenset = frozenset()  # the hours with an issue
 
 
 @dataclass
@@ -315,17 +383,19 @@ class Evidence:
         return self._one(THR, "mean")
 
     def issues(self) -> list:
-        """The KPIs of this sector that are past the operator's line."""
+        """The KPIs of this sector with an issue hour."""
         return [c for c, st in self.stats.items() if st.over > 0]
+
+    def issue_hours(self, canon: str) -> frozenset:
+        got = self.stats.get(canon)
+        return got.hours_set if got is not None else frozenset()
 
 
 def sector_hours(kpi: pd.DataFrame, objects: pd.DataFrame, cols: dict) -> pd.DataFrame:
-    """One row per serving sector and hour: the worst cell of the sector for a
-    KPI that goes bad upwards, the worst (lowest) for one that goes bad down.
-
-    A sector is several cells — carriers on the same antenna — and the ticket
-    was raised on the sector, so the sector's hour is its worst cell's hour.
-    """
+    """One row per serving sector and hour: the sector's value (its carriers
+    together, `HOW`) and, for each judged KPI, whether any of its cells has an
+    issue that hour — every cell's hourly value on its own line (a TDD cell's
+    UL interference on the TDD line)."""
     if kpi is None or kpi.empty or objects is None or objects.empty or not cols:
         return pd.DataFrame()
     place = objects.dropna(subset=["sector"])
@@ -342,11 +412,18 @@ def sector_hours(kpi: pd.DataFrame, objects: pd.DataFrame, cols: dict) -> pd.Dat
     out = pd.DataFrame({"site": [p[0] for p in pairs], "sector": [p[1] for p in pairs],
                         "datetime": part["datetime"].to_numpy()})
     how = {}
+    from rfopt.kpi.thresholds import hourly_severity
+    duplex = part["duplex"].to_numpy() if "duplex" in part.columns else None
     for canon, column in cols.items():
         if column not in part.columns:
             continue
-        out[canon] = pd.to_numeric(part[column], errors="coerce").to_numpy()
+        values = pd.to_numeric(part[column], errors="coerce").to_numpy()
+        out[canon] = values
         how[canon] = HOW.get(canon, "max")
+        rule = rule_of(canon)
+        if rule is not None and rule.judged:
+            out[f"issue:{canon}"] = (hourly_severity(rule, values, duplex) > 0).astype(int)
+            how[f"issue:{canon}"] = "max"
     if not how:
         return pd.DataFrame()
     return out.groupby(["site", "sector", "datetime"], sort=False).agg(how).reset_index()
@@ -357,7 +434,8 @@ def evidence_of(hours: pd.DataFrame, cells: dict | None = None) -> dict:
     out: dict = {}
     if hours is None or hours.empty:
         return out
-    measured = [c for c in hours.columns if c not in ("site", "sector", "datetime")]
+    measured = [c for c in hours.columns if c not in ("site", "sector", "datetime")
+                and not str(c).startswith("issue:")]
     rules = {c: rule_of(c) for c in measured}
     for (site, sector), part in hours.groupby(["site", "sector"], sort=False):
         ev = Evidence(site=str(site), sector=float(sector), hours=int(len(part)),
@@ -369,33 +447,52 @@ def evidence_of(hours: pd.DataFrame, cells: dict | None = None) -> dict:
                 continue
             rule = rules.get(canon)
             up = rule is not None and rule.direction == "up"
-            over = 0
-            if rule is not None:
-                over = int((v <= rule.critical).sum() if up else (v >= rule.critical).sum())
+            flag = f"issue:{canon}"
+            bad = (frozenset(pd.DatetimeIndex(part.loc[part[flag] > 0, "datetime"]))
+                   if flag in part.columns else frozenset())
             ev.stats[canon] = Stat(top=float(v.max()), mean=float(v.mean()),
-                                   low=float(v.min()), over=over,
-                                   worst=float(v.min() if up else v.max()))
+                                   low=float(v.min()), over=len(bad),
+                                   worst=float(v.min() if up else v.max()), hours_set=bad)
         out[(ev.site, ev.sector)] = ev
     return out
 
 
-def site_flow_control(kpi: pd.DataFrame, column: str, sites: pd.Series) -> dict:
-    """site -> (hours with a flow-control drop, the worst hour's count, the
-    average hour's count). The 3G
-    export counts flow control for the NodeB, so this is per site."""
+def _site_hourly(kpi: pd.DataFrame, column: str, sites: pd.Series, canon: str, tech: str,
+                 agg: str) -> dict:
+    """site -> (hours with an issue, the worst hour, the average hour, the issue
+    hours): the site's value each hour (its rows `agg`-ed), judged hour by hour."""
     if kpi is None or kpi.empty or not column or column not in kpi.columns:
         return {}
     site = sites.reindex(kpi.index) if sites is not None else None
     if site is None:
         return {}
-    v = pd.to_numeric(kpi[column], errors="coerce")
-    d = pd.DataFrame({"site": site.astype(str).str.upper(), "v": v}).dropna()
+    from rfopt.kpi.thresholds import hourly_severity
+    d = pd.DataFrame({"site": site.astype(str).str.upper(), "datetime": kpi["datetime"],
+                      "v": pd.to_numeric(kpi[column], errors="coerce")}).dropna()
     if d.empty:
         return {}
-    g = d.groupby("site")["v"]
-    top, avg = g.max(), g.mean()
-    return {s: (int((d.loc[d["site"].eq(s), "v"] > 0).sum()), float(top[s]), float(avg[s]))
-            for s in g.groups}
+    h = d.groupby(["site", "datetime"], sort=True)["v"].agg(agg).reset_index()
+    rule = rule_of(canon, tech)
+    h["bad"] = (hourly_severity(rule, h["v"].to_numpy()) > 0
+                if rule is not None and rule.judged else False)
+    out = {}
+    for s_id, part in h.groupby("site", sort=False):
+        bad = frozenset(pd.DatetimeIndex(part.loc[part["bad"], "datetime"]))
+        out[s_id] = (len(bad), float(part["v"].max()), float(part["v"].mean()), bad)
+    return out
+
+
+def site_flow_control(kpi: pd.DataFrame, column: str, sites: pd.Series) -> dict:
+    """site -> (hours over the flow-control line, the worst hour, the average
+    hour, those hours). Flow control is judged per site: the site's drops of
+    each hour added up, over 100,000 an hour is an issue."""
+    return _site_hourly(kpi, column, sites, "dl_flowctrl_drops", "UMTS", "sum")
+
+
+def site_rtwp(kpi: pd.DataFrame, column: str, sites: pd.Series) -> dict:
+    """site -> (hours with RTWP past its line, the worst hour, the average hour,
+    those hours) from the 3G export — its worst row each hour."""
+    return _site_hourly(kpi, column, sites, "ul_rtwp_dbm", "UMTS", "max")
 
 
 # --------------------------------------------------------------------------- #
@@ -484,10 +581,13 @@ def point_of(row) -> Point | None:
                  metres=float(row["metres"]), source=str(row.get("source", "")))
 
 
-def plan_site_status(site: str, kmz_sites: pd.DataFrame | None) -> str:
-    """On Air / Still Not On Air for a planned site, from the site KMZ alone.
-    A site the KMZ does not carry has no status here — "" — and none is made
-    up for it."""
+def plan_site_status(site: str, kmz_sites: pd.DataFrame | None, on_air=frozenset()) -> str:
+    """On Air / Still Not On Air for a planned site. The EP tracker first: a
+    site it lists as active (`on_air`, `rfopt.ingest.site_status`) is On Air
+    whatever the KMZ says, since the KMZ may not be updated yet. Otherwise the
+    site KMZ; with neither saying anything the status is "" — none is made up."""
+    if site and str(site).strip().upper() in on_air:
+        return ON_AIR
     if not site or kmz_sites is None or kmz_sites.empty:
         return ""
     row = kmz_sites[kmz_sites["site_id"].astype(str).str.upper().eq(str(site).upper())]
@@ -526,60 +626,98 @@ def _flow_parts(flow) -> tuple:
     return hours, worst, avg
 
 
+# what each check is about, as its Description names it
+_ISSUE = {"utilization": "high PRB utilization", "flow_control": "Flow Control issues",
+          "interference": "interference", "coverage": "weak coverage"}
+_NOT_VERIFIED = {"utilization": "The PRB utilization", "flow_control": "Flow Control",
+                 "interference": "The interference", "coverage": "The coverage"}
+
+
+def _rtwp_parts(rtwp) -> tuple:
+    if rtwp is None:
+        return 0, float("nan"), float("nan")
+    return rtwp[0], rtwp[1], rtwp[2]
+
+
 def describe(check: str, serving: str, ev: Evidence | None, point: Point | None,
              plan: str = "", plan_site: str = "", flow: tuple | None = None,
-             metres=None) -> str:
-    """The Description of a ticket, in the R5 team's fixed wording for its check.
-    Only the values change; a value the data does not carry reads N/A."""
+             metres=None, verdict: str = NOT_SOLVE, *, rtwp: tuple | None = None,
+             no_grid: bool = False, comment: str = "") -> str:
+    """The Description of a ticket, written for its final verdict.
+
+    Not Solve: the R5 team's fixed wording for the check ("still experiencing
+    ..."), only the values filled in. Solve: the same sentence with the issue
+    "no longer" seen. Not Checked: the check could not be verified. Not
+    Technical: what the Diagnostic Comment says. A value the data does not
+    carry reads N/A.
+    """
+    if verdict == NOT_TECHNICAL:
+        text = re.sub(r"\s+", " ", str(comment or "")).strip()
+        text = text[:200] + ("…" if len(text) > 200 else "")
+        return ("Not Technical: the Diagnostic Comment explains the issue as non-technical"
+                + (f" (\u201c{text}\u201d)" if text else "") + ". No KPI check is run on it.")
     lead = (f"The serving sector is {serving or _NA}, with a distance of {_dist(metres)} "
             "from the user location.")
-    rsrp = _rsrp(point)
-    if check == "planned":
-        state = "is now on air" if plan == ON_AIR else "is still not on air"
-        return (f"The planned site {plan_site or _NA} {state}. {lead} "
-                f"The current RSRP measurement is {rsrp}.")
+    rsrp = ("N/A (no RSRP grid at the user location)" if no_grid and point is None
+            else _rsrp(point))
+    if check not in _ISSUE:
+        check = "coverage"
+    if verdict == NOT_CHECKED:
+        tail = "" if check == "coverage" else f" The RSRP measurement is {rsrp}."
+        return f"{lead} {_NOT_VERIFIED[check]} could not be verified from the loaded data.{tail}"
+    how = "is no longer" if verdict == SOLVE else "is still"
+    if check == "coverage":
+        return (f"{lead} The area {how} experiencing weak coverage, with an RSRP measurement "
+                f"of {rsrp}.")
     if check == "utilization":
         mx = _num(ev.prb_max if ev is not None else None, ".1f", "%")
         av = _num(ev.prb_avg if ev is not None else None, ".1f", "%")
-        return (f"{lead} The sector is still experiencing high PRB utilization, with a maximum "
-                f"value of {mx} and an average value of {av}. The RSRP measurement is {rsrp}.")
-    if check == "flow_control":
+        values = f"with a maximum value of {mx} and an average value of {av}"
+    elif check == "flow_control":
         _, worst, avg = _flow_parts(flow)
-        return (f"{lead} The sector is still experiencing Flow Control issues, with a maximum "
-                f"value of {_num(worst, ',.0f')} and an average value of {_num(avg, ',.1f')}. "
-                f"The RSRP measurement is {rsrp}.")
-    if check == "interference":
-        mx = _num(ev.rssi_max if ev is not None else None, ".1f", " dBm")
-        av = _num(ev.rssi_avg if ev is not None else None, ".1f", " dBm")
-        return (f"{lead} The sector is still experiencing interference, with a maximum RTWP "
-                f"value of {mx} and an average value of {av}. The RSRP measurement is {rsrp}.")
-    return (f"{lead} The area is still experiencing weak coverage, with an RSRP measurement "
-            f"of {rsrp}.")
+        values = (f"with a maximum value of {_num(worst, ',.0f')} and an average value of "
+                  f"{_num(avg, ',.1f')}")
+    else:
+        if ev is not None and ev.stat(RSSI) is not None:
+            mx, av = ev.rssi_max, ev.rssi_avg
+        else:
+            _, mx, av = _rtwp_parts(rtwp)
+        values = (f"with a maximum RTWP value of {_num(mx, '.1f', ' dBm')} and an average value "
+                  f"of {_num(av, '.1f', ' dBm')}")
+    return (f"{lead} The sector {how} experiencing {_ISSUE[check]}, {values}. "
+            f"The RSRP measurement is {rsrp}.")
 
 
 def judge(check: str, serving: str, ev: Evidence | None, point: Point | None,
           plan: str = "", plan_site: str = "", flow: tuple | None = None,
-          metres=None) -> tuple:
-    """(Solve / Not Solve / Not Checked, the Description).
+          metres=None, *, rtwp: tuple | None = None, located: bool = False,
+          coverage: bool = False, comment: str = "") -> tuple:
+    """(Solve / Not Solve / Not Checked / Not Technical, the Description).
 
-    The verdict is read from the measured numbers against the operator's own
-    lines; the Description is written in the fixed format of `describe`.
-    """
-    text = describe(check, serving, ev, point, plan, plan_site, flow, metres)
-    return _verdict(check, serving, ev, point, plan, flow), text
+    The verdict comes first, read from the current data against the lines in
+    config/THRESHOLD_SOURCES.md — never from the closure code, nor from the
+    planned site's status — and the Description is then written for it.
+    `located`: the ticket carries the user's location; `coverage`: an RSRP
+    grid is loaded (a location it does not cover is poor coverage)."""
+    no_grid = located and coverage and point is None
+    verdict = _verdict(check, serving, ev, point, flow, rtwp=rtwp, located=located,
+                       coverage=coverage)
+    return verdict, describe(check, serving, ev, point, plan, plan_site, flow, metres,
+                             verdict=verdict, rtwp=rtwp, no_grid=no_grid, comment=comment)
 
 
 def _verdict(check: str, serving: str, ev: Evidence | None, point: Point | None,
-             plan: str = "", flow: tuple | None = None) -> str:
-    if check == "planned":
-        if plan == NOT_ON_AIR:
-            return NOT_SOLVE
-        if plan == ON_AIR:
-            if point is not None:
-                return _coverage_verdict(point)
-            if ev is not None and ev.hours:
-                return _utilization_verdict(ev)
-        return NOT_CHECKED
+             flow: tuple | None = None, *, rtwp: tuple | None = None,
+             located: bool = False, coverage: bool = False) -> str:
+    if check == "not_technical":
+        return NOT_TECHNICAL
+
+    if check in ("coverage", "planned"):      # a planned site: RSRP decides, never its status
+        if not located or not coverage:
+            return NOT_CHECKED                # no location: RSRP is ignored
+        if point is None:
+            return NOT_SOLVE                  # no RSRP grid at the location: poor coverage
+        return _coverage_verdict(point)
 
     if check == "flow_control":
         if flow is None:
@@ -587,21 +725,36 @@ def _verdict(check: str, serving: str, ev: Evidence | None, point: Point | None,
         return NOT_SOLVE if _flow_parts(flow)[0] else SOLVE
 
     if check == "interference":
-        if ev is None or not ev.hours or pd.isna(ev.rssi_max):
+        have4g = ev is not None and ev.hours and ev.stat(RSSI) is not None
+        have3g = rtwp is not None
+        if not have4g and not have3g:
             return NOT_CHECKED
-        return NOT_SOLVE if ev.rssi_hours else SOLVE
+        bad = (have4g and ev.rssi_hours > 0) or (have3g and _rtwp_parts(rtwp)[0] > 0)
+        return NOT_SOLVE if bad else SOLVE
 
     if check == "utilization":
         if not serving:
             return NOT_CHECKED
         return _utilization_verdict(ev)
 
-    if check == "coverage":
-        if point is None:
-            return NOT_CHECKED
-        return _coverage_verdict(point)
-
     return NOT_CHECKED
+
+
+def issue_hours(check: str, ev: Evidence | None, flow: tuple | None = None,
+                rtwp: tuple | None = None) -> float:
+    """How many hours the ticket's problem had an issue over the analysed
+    period (the hourly analysis); NaN where the check has no hours."""
+    if check == "utilization":
+        return float(len(ev.issue_hours(PRB))) if ev is not None and ev.stat(PRB) else float("nan")
+    if check == "flow_control":
+        return float(_flow_parts(flow)[0]) if flow is not None else float("nan")
+    if check == "interference":
+        hours = set(ev.issue_hours(RSSI)) if ev is not None else set()
+        if rtwp is not None and len(rtwp) > 3:
+            hours |= set(rtwp[3])
+        have = (ev is not None and ev.stat(RSSI) is not None) or rtwp is not None
+        return float(len(hours)) if have else float("nan")
+    return float("nan")
 
 
 def _utilization_verdict(ev: Evidence | None) -> str:
@@ -611,13 +764,13 @@ def _utilization_verdict(ev: Evidence | None) -> str:
 
 
 def _coverage_verdict(point: Point) -> str:
-    rule = rule_of(RSRP_RULE)
-    line = rule.warning if rule is not None else -105.0
-    return NOT_SOLVE if point.rsrp <= line else SOLVE
+    from rfopt.geo.coverage import poor_rsrp_line
+    return NOT_SOLVE if point.rsrp <= poor_rsrp_line() else SOLVE
 
 
 __all__ = ["CHECK_KPI", "CLOSURE_CODES", "CODE_CHECK", "Evidence", "FLOW", "HOW", "KPI_NAME",
-           "NOT_CHECKED", "NOT_SOLVE", "NOT_ON_AIR", "ON_AIR", "Point", "RTWP", "SOLVE", "Stat",
+           "NOT_CHECKED", "NOT_SOLVE", "NOT_ON_AIR", "NOT_TECHNICAL", "ON_AIR", "Point", "RTWP",
+           "SOLVE", "Stat", "comment_check", "issue_hours", "reason_of", "site_rtwp",
            "angle_gap", "bearing", "canon_of", "check_of", "columns_for", "describe", "evidence_of",
            "flow_control_column", "fmt_metres", "is_planned", "judge", "kpi_columns",
            "metres_between", "plan_site_status", "point_of", "rsrp_at", "rsrp_frame", "rule_of",

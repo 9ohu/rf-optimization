@@ -67,15 +67,16 @@ def _id_text(x) -> str:
 
 
 def cell_table(index: pd.DataFrame | None, cell_ids: pd.Series | None = None) -> pd.DataFrame:
-    """Per technology and object (a sector, or the site / NodeB when the export
-    names no sector): the cells the exports list under it, and their cell IDs
-    from the EP tracker (cell name -> ID). Keyed "4G|BAS0001-S1"."""
+    """Per technology and analysed object (a cell, or the site / NodeB where the
+    export measures sites): the cells the exports list under it, and their cell
+    IDs from the EP tracker (cell name -> ID). Keyed "4G|<cell name>"."""
     if index is None or index.empty or "tech" not in index.columns:
         return pd.DataFrame(columns=["cell_name", "cell_id"])
-    d = (index[["tech", "object", "site_id", "sector_id"]].dropna(subset=["site_id"])
+    from _kpi_health import object_ids
+    cols = [c for c in ("tech", "object", "site_id", "sector_id", "level") if c in index.columns]
+    d = (index[cols].dropna(subset=["site_id"])
          .drop_duplicates(["tech", "object"]))
-    sector = d["sector_id"].astype(str)
-    oid = np.where(sector.str.endswith("-S0"), d["site_id"].astype(str), sector)
+    oid = object_ids(d)
     ids = (d["object"].astype(str).str.strip().str.upper().map(cell_ids)
            if cell_ids is not None and len(cell_ids) else pd.Series(np.nan, index=d.index))
     d = d.assign(_key=d["tech"].astype(str) + "|" + oid, _id=ids.map(_id_text)).sort_values(

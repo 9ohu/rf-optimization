@@ -155,9 +155,12 @@ def test_every_site_of_the_kmz_reaches_the_sites_map(tmp_path):
     usm = every.sites.set_index("site_id").loc["USM0729"]
     assert usm["latitude"] == pytest.approx(31.366416)
 
-    page = (Path(__file__).resolve().parents[1] / "app" / "views" / "site_map.py").read_text(
-        encoding="utf-8")
-    assert "load_kmz_sites(path, region=None)" in page
+    # the Sites map reads the KMZ through its loader module, unfiltered
+    app = Path(__file__).resolve().parents[1] / "app"
+    page = (app / "views" / "site_map.py").read_text(encoding="utf-8")
+    loaders = (app / "_site_data.py").read_text(encoding="utf-8")
+    assert "load_kmz_path as _load_kmz_path" in page
+    assert "load_kmz_sites(path, region=None)" in loaders
 
 
 def test_bytes_buffer_input(tmp_path):

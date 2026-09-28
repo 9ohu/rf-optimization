@@ -33,8 +33,10 @@ from rfopt.kpi.trends import panels_for
 from rfopt.sleep import analysis as A
 
 SOLVE, NOT_SOLVE, NOT_CHECKED = A.SOLVE, A.NOT_SOLVE, A.NOT_CHECKED
-STATES = (NOT_SOLVE, SOLVE, NOT_CHECKED)
-TONE = {SOLVE: "#22C55E", NOT_SOLVE: "#EF4444", NOT_CHECKED: "#F59E0B"}
+NOT_TECHNICAL = A.NOT_TECHNICAL
+STATES = (NOT_SOLVE, SOLVE, NOT_CHECKED, NOT_TECHNICAL)
+TONE = {SOLVE: "#22C55E", NOT_SOLVE: "#EF4444", NOT_CHECKED: "#F59E0B",
+        NOT_TECHNICAL: "#94A3B8"}
 BAR = ["#F59E0B", "#FBBF24", "#1597FF", "#20BFFF", "#A78BFA", "#22C55E", "#F472B6", "#64748B"]
 OPEN = "sl_open"                     # the ticket the detail panel is showing
 
@@ -67,6 +69,7 @@ COLUMNS = [
     ("status", "Status", "text", 110),
     ("distance", "Distance", "text", 118),
     ("verdict", "Site Issue", "verdict", 126),
+    ("issue_hours", "Issue Hours", "num", 118),
     ("plan_status", "Plan Site Status", "air", 158),
     ("rsrp", "RSRP", "num", 104),
     ("description", "Description", "comment", 420),
@@ -74,6 +77,15 @@ COLUMNS = [
 
 CSS = """
 <style>
+/* Sleep Analysis reads over the Iraq map: its cards and panels are a denser
+   glass than elsewhere, so the map stays behind them without crossing the text */
+[class*="st-key-sl_card"], .rf-kpi, .rf-card, [class*="st-key-rf_card"] {
+    background: rgba(6, 16, 31, .90) !important;
+    border-color: rgba(64, 160, 255, .24) !important;
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    border-radius: 12px;
+}
+[data-testid="stMain"] { text-shadow: 0 1px 2px rgba(2, 6, 14, .95), 0 0 7px rgba(2, 6, 14, .9); }
 .sl-bars { display: flex; flex-direction: column; gap: 6px; }
 .sl-bar { display: grid; grid-template-columns: 1fr 60px; align-items: center; gap: 10px;
     font-size: 11.5px; color: #CBD5E1; }
@@ -185,7 +197,7 @@ def problem_times(path: str, _sha: str) -> pd.Series:
     return out.drop_duplicates("id").set_index("id")["t"]
 
 
-@st.cache_resource(show_spinner="Reading the KPI of every sector…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def sector_facts(key: tuple) -> dict:
     """Every serving sector the 4G export measures: its hours, and the cells
     behind it. The EP tracker says which cells a sector holds, exactly as Bulk
@@ -245,17 +257,75 @@ def flow_facts(key: tuple) -> dict:
     return A.site_flow_control(data, column, data["site_id"].astype(str))
 
 
-@st.cache_resource(show_spinner="Checking the sleep tickets…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
+def rtwp_facts(key: tuple) -> dict:
+    """site -> (hours with RTWP past its line, the worst hour, the average hour, those hours)."""
+    three = three_g()
+    if not three:
+        return {}
+    column = three_columns().get(A.RTWP)
+    if not column:
+        return {}
+    data = pd.concat([W.raw(b, (column,)) for b, _ in three], ignore_index=True)
+    if "site_id" not in data.columns:
+        return {}
+    return A.site_rtwp(data, column, data["site_id"].astype(str))
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
+def cell_grid(key: tuple, _grids: tuple):
+    """The coverage files as the map's native grid, read by position."""
+    from rfopt.geo.coverage import CellGrid
+    return CellGrid(list(_grids))
+
+
+def _serving(pop: pd.DataFrame, on_air: pd.DataFrame, all_sectors: pd.DataFrame) -> None:
+    """The serving sector, the way a Delay ticket's is found: with the user's
+    location, the ticket's own site (Site ID, else the site of its column-FB
+    sector) and its sector facing the location — the distance × azimuth best
+    server only when the ticket names no site. Without a location, the
+    sector the ticket names (column FB)."""
+    from rfopt.complaints.relocate import best_server, facing_sector, ticket_site
+    lat = pd.to_numeric(pop["latitude"], errors="coerce")
+    lon = pd.to_numeric(pop["longitude"], errors="coerce")
+    by_site = ({s: g for s, g in all_sectors.groupby(all_sectors["site_id"].astype(str).str.upper())}
+               if all_sectors is not None and len(all_sectors) else {})
+    for i in pop.index:
+        la, lo = lat.at[i], lon.at[i]
+        if pd.isna(la) or pd.isna(lo):
+            continue
+        site = ticket_site(pop.at[i, "site_id"]) or ticket_site(pop.at[i, "site"])
+        server = (facing_sector(float(la), float(lo), by_site.get(site, pd.DataFrame()))
+                  if site else best_server(float(la), float(lo), on_air))
+        if server is None:
+            continue
+        m = re.search(r"-S?(\d+)$", str(server.sector_id))
+        if not m:
+            continue
+        pop.at[i, "site"] = server.site_id
+        pop.at[i, "sector_num"] = float(m.group(1))
+        pop.at[i, "serving"] = f"{server.site_id}-{int(m.group(1))}"
+
+
+@st.cache_resource(show_spinner=False, max_entries=2)
 def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
              _grids: list, _kmz: pd.DataFrame | None, _times: pd.Series,
-             _sites: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Every sleep ticket with its verdict, the RSRP measured where the
-    subscriber was, the status of its planned site and the comment that says
-    what the check read."""
+             _sites: pd.DataFrame | None = None,
+             _on_air: frozenset = frozenset(), _rtwp: dict | None = None,
+             _grid=None, _sectors: tuple = (None, None)) -> pd.DataFrame:
+    """Every sleep ticket with the reason it slept, its serving sector, its
+    verdict, the RSRP of the grid cell where the subscriber was, the issue
+    hours of its problem, the status of its planned site (shown, never the
+    verdict) and the comment that says what the check read."""
     pop = A.sleep_population(_history)
     if pop.empty:
         return pop
-    near = A.rsrp_frame(pop["latitude"], pop["longitude"], _grids)
+    _serving(pop, *_sectors)
+    # the RSRP of the grid cell at the user's location — never the serving sector
+    grid = _grid if _grid is not None else cell_grid((), tuple(_grids))
+    near = grid.at_many(pop["latitude"], pop["longitude"])
+    located = (pd.to_numeric(pop["latitude"], errors="coerce").notna()
+               & pd.to_numeric(pop["longitude"], errors="coerce").notna()).to_numpy()
     # how far the subscriber was from the site that served them
     where = (_sites if _sites is not None else pd.DataFrame()).reindex(pop["site"])
     pop["site_lat"] = where["latitude"].to_numpy() if len(where.columns) else np.nan
@@ -266,29 +336,44 @@ def analysed(key: tuple, _history: pd.DataFrame, _facts: dict, _flow: dict,
                          pop["site_lat"], pop["site_lon"])]
     pop["distance"] = pop["metres"].map(A.fmt_metres)
     ev = _facts.get("evidence", {})
+    rtwp_all = _rtwp or {}
+    coverage = bool(getattr(grid, "ok", False))
     plan_cache: dict = {}
-    verdicts, why, status, rsrp = [], [], [], []
+    verdicts, why, status, rsrp, hours = [], [], [], [], []
     for n, r in enumerate(pop.itertuples(index=False)):
         site, num = r.site, r.sector_num
         one = ev.get((site, num)) if site and pd.notna(num) else None
-        point = A.point_of(near.iloc[n])
+        cell = near.iloc[n]
+        point = (A.Point(rsrp=float(cell["rsrp"]), mr=int(cell["mr"] or 0), metres=0.0,
+                         source="grid cell") if located[n] and pd.notna(cell["rsrp"]) else None)
         plan = ""
         if r.plan_site:
             if r.plan_site not in plan_cache:
-                plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz)
+                plan_cache[r.plan_site] = A.plan_site_status(r.plan_site, _kmz, _on_air)
             plan = plan_cache[r.plan_site]
-        v, text = A.judge(r.check, r.serving, one, point, plan, r.plan_site,
-                          _flow.get(site) if site else None, metres=r.metres)
+        flow = _flow.get(site) if site else None
+        rtwp = rtwp_all.get(site) if site else None
+        v, text = A.judge(r.check, r.serving, one, point, plan, r.plan_site, flow,
+                          metres=r.metres, rtwp=rtwp, located=bool(located[n]),
+                          coverage=coverage, comment=getattr(r, "comment", ""))
         verdicts.append(v)
         why.append(text)
         status.append(plan)
         rsrp.append(round(point.rsrp, 1) if point is not None else np.nan)
+        hours.append(np.nan if v == NOT_TECHNICAL else A.issue_hours(r.check, one, flow, rtwp))
     pop["verdict"] = verdicts
     pop["description"] = why
     pop["plan_status"] = status
     pop["rsrp"] = rsrp
-    pop["rsrp_m"] = near["metres"].to_numpy()
+    pop["issue_hours"] = hours
+    pop["no_grid"] = located & coverage & np.isnan(np.asarray(rsrp, dtype=float))
+    pop["rsrp_m"] = np.nan
     pop["mr"] = near["mr"].to_numpy()
+    # the other main KPIs of the site, beside the ticket's own
+    pop["flow_h"] = [(_flow.get(s) or (np.nan,))[0] if s else np.nan for s in pop["site"]]
+    pop["flow_max"] = [(_flow.get(s) or (0, np.nan))[1] if s else np.nan for s in pop["site"]]
+    pop["rtwp_h"] = [(rtwp_all.get(s) or (np.nan,))[0] if s else np.nan for s in pop["site"]]
+    pop["rtwp_max"] = [(rtwp_all.get(s) or (0, np.nan))[1] if s else np.nan for s in pop["site"]]
     pop["problem_time"] = (pd.to_datetime(pop["hpsm_id"].map(_times), errors="coerce")
                            if len(_times) else pd.NaT)
     return pop
@@ -314,7 +399,14 @@ def page_data():
     sites = site_points(W.ep_path() or "", kmz_file.sha1 if kmz_file else "", kmz)
     key = (hist_file.sha1, kpi_key, W.ep_key(), tuple(sorted(kept)),
            kmz_file.sha1 if kmz_file else "", len(times), len(sites))
-    df = analysed(key, history, facts, flow, grids, kmz, times, sites)
+    rtwp = rtwp_facts(tuple(W.src_key(b) for b, _ in three))
+    grid = cell_grid(tuple(sorted(kept)), tuple(kept[k] for k in sorted(kept)))
+    import _relocate as RL
+    sectors = (RL.serving_sectors(), RL.site_sectors())
+    # the EP tracker's active sites: On Air whatever the KMZ says (the key
+    # already carries the EP file, so a new EP re-runs the checks)
+    df = analysed(key, history, facts, flow, grids, kmz, times, sites, R.ep_on_air(),
+                  rtwp, grid, sectors)
     missing = []
     if not four:
         missing.append("4G KPI Data")
@@ -491,6 +583,7 @@ def for_table(df: pd.DataFrame) -> pd.DataFrame:
     out["plan_site"] = out["plan_site"].replace("", pd.NA).fillna("")
     out["plan_status"] = out["plan_status"].replace("", pd.NA).fillna("")
     out["rsrp"] = out["rsrp"].map(lambda v: "" if pd.isna(v) else f"{v:g}")
+    out["issue_hours"] = out["issue_hours"].map(lambda v: "" if pd.isna(v) else f"{v:.0f}")
     out["distance"] = out["distance"].replace("-", "")
     out["wake_after"] = out["wake_after"].map(lambda v: "" if pd.isna(v) else f"{v:.0f}")
     for f in ("longitude", "latitude"):
@@ -557,15 +650,23 @@ def kpi_state(ev, row: pd.Series) -> list:
         unit = "%" if canon in (A.PRB, A.AVAIL) else " dBm"
         dec = 2 if canon == A.AVAIL else (1 if canon == A.RSSI else 0)
         text = f"{value:,.{dec}f}{unit}"
-        note = (f"{stat.over} h at/over {rule.critical:g}" if rule is not None and not up
-                else (f"{stat.over} h under {rule.critical:g}" if rule is not None else ""))
+        note = f"{stat.over} h with an issue" if rule is not None else ""
         out.append((A.KPI_NAME[canon], text, stat.over > 0, note))
+    # the 3G main KPIs, counted for the site
+    for name, h, mx, fmt in (("Flow Control (site)", "flow_h", "flow_max", ",.0f"),
+                             ("RTWP (site)", "rtwp_h", "rtwp_max", ".1f")):
+        if not pd.isna(row.get(h, np.nan)):
+            unit = " dBm" if h == "rtwp_h" else ""
+            out.append((name, f"{row[mx]:{fmt}}{unit}", row[h] > 0,
+                        f"{int(row[h])} h with an issue"))
+    from rfopt.geo.coverage import poor_rsrp_line
     if not pd.isna(row.get("rsrp")):
-        rule = A.rule_of(A.RSRP_RULE)
-        line = rule.warning if rule is not None else -105.0
-        note = ("" if pd.isna(row.get("rsrp_m")) else
-                f"{row['rsrp_m']:.0f} m away · {int(row['mr']):,} MRs")
-        out.append(("RSRP at the subscriber", f"{row['rsrp']:g} dBm", row["rsrp"] <= line, note))
+        note = "" if pd.isna(row.get("mr")) else f"grid cell · {int(row['mr']):,} MRs"
+        out.append(("RSRP at the subscriber", f"{row['rsrp']:g} dBm",
+                    row["rsrp"] <= poor_rsrp_line(), note))
+    elif bool(row.get("no_grid", False)):
+        out.append(("RSRP at the subscriber", "no grid", True,
+                    "no RSRP grid at the user location"))
     return out
 
 
@@ -805,7 +906,6 @@ section[data-testid="stMain"] { overflow: hidden !important; }
 # map uses, kept apart from each other and from the map's controls
 MAP_FRAME_CSS = """
 html, body { margin: 0; }
-#map_div, #map_div2, .folium-map { height: 100vh !important; }
 .sm-legend { max-height: calc(100vh - 150px); overflow-y: auto; min-width: 0 !important;
     max-width: calc(100vw - 24px); box-sizing: border-box; font-size: 11px !important;
     padding: 7px 9px 6px !important; }
@@ -819,6 +919,7 @@ html, body { margin: 0; }
 .leaflet-control-attribution { max-width: 45vw; font-size: 10px; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
 .leaflet-control-attribution:hover { white-space: normal; }
+.leaflet-marker-icon.sm-lbl { pointer-events: none !important; }
 """
 
 
@@ -839,6 +940,35 @@ def _popup_fold():
             {% endmacro %}
         """)
     return PopupFold()
+
+
+def site_names() -> dict:
+    """site -> its name on the map, from the site KMZ — the Site Map's own
+    source. A site the KMZ does not name keeps its ID, as on the Site Map."""
+    kmz_file = R.kmz_file()
+    if kmz_file is None:
+        return {}
+    kmz = _kmz_sites(str(kmz_file.path), kmz_file.sha1)
+    if kmz is None or kmz.empty or "site_name" not in kmz.columns:
+        return {}
+    name = kmz["site_name"].fillna("").astype(str).str.strip()
+    return dict(zip(kmz["site_id"].astype(str).str.upper(), name))
+
+
+def _site_labels(spots: list):
+    """The Site Map's site-name labels, for [(site, lat, lon)]: the name, or
+    the ID where the KMZ has none; sites on one spot stacked one under the other."""
+    from _map_ui import SiteLabels
+
+    names, seen, pts = site_names(), {}, []
+    for site, lat, lon in spots:
+        at = f"{lat:.6f},{lon:.6f}"
+        pts.append([round(lat, 6), round(lon, 6), names.get(str(site).upper()) or str(site),
+                    seen.get(at, 0)])
+        seen[at] = seen.get(at, 0) + 1
+    # the satellite imagery is under both basemaps: the Site Map's dark-on-light
+    # label colours for it
+    return SiteLabels(pts, fg="#111", halo="#fff", min_zoom=13)
 
 
 def _fs_button(fs: bool) -> None:
@@ -880,7 +1010,12 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
     from _kpi_map import LEGEND_CSS
     from _map_ui import MAP_CSS
     fmap.get_root().header.add_child(
-        folium.Element(f"<style>{MAP_CSS}{LEGEND_CSS}{MAP_FRAME_CSS}</style>"))
+        folium.Element(f"<style>{MAP_CSS}{LEGEND_CSS}{MAP_FRAME_CSS}"
+                       # the map fills its frame (full screen stretches it), but
+                       # never below its own height: the frame starts at 0 px and
+                       # the first fit-to-bounds would zoom all the way in
+                       f"#map_div, #map_div2, .folium-map {{ height: max(100vh, {height}px)"
+                       " !important; }</style>"))
     # while a coverage read-out is open the legend folds to its title, so the
     # two never sit on top of each other
     fmap.add_child(_popup_fold())
@@ -894,16 +1029,22 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
                     "measured grid to draw.</div>")
 
     # the sites around this one, so the serving sector is seen in its place
-    for n in neighbours(row["site"]).itertuples(index=False):
+    # over the coverage grid the outlines are drawn stronger, so the sites and
+    # the serving sector still stand out from the grid's colours
+    on_grid = basemap == COVERAGE
+    near = neighbours(row["site"])
+    for n in near.itertuples(index=False):
         folium.Polygon(_wedge(float(n.latitude), float(n.longitude),
                               float(n.azimuth_deg) if pd.notna(n.azimuth_deg) else 0.0,
                               metres=200.0),
-                       color="#64748B", weight=1, fill=True, fill_color="#64748B",
-                       fill_opacity=0.12,
+                       color="#E2E8F0" if on_grid else "#64748B", weight=1.5 if on_grid else 1,
+                       fill=True, fill_color="#64748B", fill_opacity=0.12,
                        tooltip=f"{n.site_id}-{n.sector_num:g} · neighbour").add_to(fmap)
-        folium.CircleMarker([float(n.latitude), float(n.longitude)], radius=3,
-                            color="#94A3B8", weight=1, fill=True, fill_color="#64748B",
-                            fill_opacity=0.9, tooltip=str(n.site_id)).add_to(fmap)
+        folium.CircleMarker([float(n.latitude), float(n.longitude)], radius=4 if on_grid else 3,
+                            color="#F8FAFC" if on_grid else "#94A3B8",
+                            weight=2 if on_grid else 1, fill=True, fill_color="#64748B",
+                            fill_opacity=0.9 if not on_grid else 1,
+                            tooltip=str(n.site_id)).add_to(fmap)
 
     az = float("nan")
     for sec in sectors.itertuples(index=False):
@@ -913,8 +1054,10 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
             az = float(sec.azimuth_deg) if pd.notna(sec.azimuth_deg) else float("nan")
         folium.Polygon(_wedge(float(sec.latitude), float(sec.longitude),
                               float(sec.azimuth_deg) if pd.notna(sec.azimuth_deg) else 0.0),
-                       color=colour, weight=2 if serving else 1, fill=True, fill_color=colour,
-                       fill_opacity=0.45 if serving else 0.16,
+                       color="#F8FAFC" if serving and on_grid else colour,
+                       weight=(3 if on_grid else 2) if serving else 1, fill=True,
+                       fill_color=colour, fill_opacity=(0.6 if on_grid else 0.45) if serving
+                       else 0.16,
                        tooltip=f"{row['site']}-{sec.sector_num:g}"
                                f"{' · serving' if serving else ''}").add_to(fmap)
     if site_at is not None:
@@ -931,6 +1074,14 @@ def map_panel(row: pd.Series, height: int = 300, basemap: str = SATELLITE):
         if site_at is not None:
             folium.PolyLine([list(site_at), list(here)], color="#F8FAFC", weight=1,
                             opacity=0.6, dash_array="4,4").add_to(fmap)
+    # every site drawn carries its name, as on the Site Map
+    spots = [] if site_at is None else [(row["site"], site_at[0], site_at[1])]
+    if len(near):
+        first = near.groupby("site_id", sort=False)[["latitude", "longitude"]].first()
+        spots += [(sid, float(r.latitude), float(r.longitude))
+                  for sid, r in first.iterrows()]
+    if spots:
+        fmap.add_child(_site_labels(spots))
     seen = [list(p) for p in (here, site_at) if p is not None]
     if len(seen) > 1:
         fmap.fit_bounds(seen, padding=(40, 40))

@@ -79,7 +79,7 @@ def region_of(f: CoverageFile) -> str:
     return head.upper() if head.isalpha() else Path(f.name).stem[:12]
 
 
-@st.cache_resource(show_spinner="Building the coverage grid…", max_entries=2)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def _grid(key: tuple, _files: tuple):
     lat = np.concatenate([f.lat for f in _files])
     lon = np.concatenate([f.lon for f in _files])

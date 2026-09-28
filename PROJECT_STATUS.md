@@ -1,4 +1,74 @@
-# Project status / handoff  (updated 2026-09-25)
+# Project status / handoff  (updated 2026-09-27)
+
+## 2026-09-27 (cont.) - Analysis logic: the R5 team's rules (logic only, UI unchanged)
+
+Thresholds (`config/thresholds_*.yaml`, `config/THRESHOLD_SOURCES.md`): a rule
+is judged only with a `source` (`ThresholdRule.judged`). Main KPIs, warning =
+critical (one Issue line): PRB > 80 %, availability < 99 %, FDD UL interference
+worse than -105 dBm, TDD worse than -100 dBm (`ul_rssi_tdd_dbm`, CELL_TDD
+cells), 3G RTWP worse than -90 dBm, flow control > 100,000 per site-hour. Every
+other KPI: no confirmed Huawei source -> shown, never judged. The RSRP poor
+line (-105) is the existing value, not confirmed.
+
+- **Hourly, never averages**: `thresholds.hourly_severity` judges every hourly
+  value on its own. Exports carry `level` (cell / site).
+- **KPI Analysis**: per cell (worst hour + value) and per site from all its
+  cells (`_kpi_health.object_values`, `site_status` cells / cells_issue);
+  flow control per site-hour. Main KPIs lead.
+- **Delay tickets** (`correlate.analyse_ticket`): all cells of the site, the
+  KpiTrack keeps every cell-hour; resolution reads every hour after the
+  window to the end of the data. No-location tickets: no RSRP, no serving
+  sector, no neighbours; Evidence status column and RSRP row removed; charts
+  one trace per cell.
+- **User location** (`relocate.reanalyse`): the ticket's Site ID -> its sector
+  facing the user (`facing_sector`); only an empty / 0 Site ID uses the best
+  server equation. RSRP = the grid cell at the point (`coverage.grid_cell_rsrp`,
+  map lattice), no grid = Poor coverage / Coverage Issue. Neighbours: no
+  fixed count - per other site its sector facing the user (azimuth within
+  `FACING_DEG` 60 of the bearing to the user, site within `RELEVANT_M` 3 km);
+  in each direction from the user (bearings within `SAME_DIRECTION_DEG` 30,
+  the serving sector included) only the nearest; each on all of its cells
+  (context, not verdict).
+- **Sleep** (`sleep/analysis.py`): reason = Diagnostic Comment > RF Analysis >
+  Closure Code (`reason_of`); "not technical" comment -> Not Technical; DT ->
+  coverage; planned -> coverage unless the comment / RF says load. Coverage:
+  RSRP decides (needs a location; no grid under it = Not Solve); Plan Site
+  Status is shown, never decides. Full KPI period, per sector, per hour; one
+  new column **Issue Hours** after Site Issue.
+- Tests: `tests/test_analysis_rules.py` (every path) + updated suites.
+
+## 2026-09-27 - Startup: a comet brings the day, a dial for the four steps
+
+`app/_startup.py`, the loading itself unchanged (same tasks, messages, Ready
+rule). The tower's signal flies as a comet (LAUNCH 1 s, FLY 1.9 s) to Baghdad;
+where it lands day spreads over the map (REVEAL 2.4 s), each city lighting as
+it is reached, each link drawing itself then carrying data. Two backbones stay
+live: tower to Baghdad and the foot of the picture to Basra. The panel is a
+dial: one quarter per step, each filled by its own step's tasks (`_warmup`'s
+begin message now carries the task count of each step), beside the four
+steps Standby / Syncing % / Online. MIN_SHOW 5.4 s so the scene plays through.
+
+## 2026-09-26 - Main system background, glass sidebar, Daily Worklist removed
+
+Visual only; the Dashboard and every page keep their layout and logic.
+
+- **Background**: after the startup's Ready, the Iraq night network map
+  (`app/static/main/rf_main_bg.png`, the provided 1672x940 picture, never
+  resampled) sits behind the main area of every page (`stMain`: the page
+  scrolls over it), under a dark veil. Cards, KPI tiles and the header bar
+  are dark glass (62 % opaque, light blur) so the map shows through and the
+  content still reads. The startup screen is untouched.
+- **Sidebar**: dark navy glass, a thin lit cyan edge, restyled navigation
+  (same items and routes). Brand: the Huawei flower, HUAWEI, (c) Shamsaldin Ali
+  (`_ui.LOGO_SVG`). The telecom tower (`rf_sidebar_tower.png`, a crop of the
+  provided picture) is the sidebar's own `::before` layer at its foot, so it
+  collapses and returns with the sidebar.
+- **Removed**: the Daily Worklist page (`app/views/dashboard.py`), its nav
+  entry, its app-only helpers (`_shared.load_params`, `load_history`,
+  `PRIO_HEX`) and its tests; the Deploy button and the three-dot menu
+  (`client.toolbarMode = "minimal"` + CSS). The worklist engine in
+  `rfopt/complaints/worklist.py` stays: Complaints and Data Resources use it.
+- Tests: `tests/test_main_theme.py`.
 
 ## 2026-09-25 (cont.) - Sleep Analysis: the modifications the R5 team asked for
 

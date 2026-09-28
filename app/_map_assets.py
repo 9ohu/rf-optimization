@@ -19,6 +19,12 @@ Why the Sites map was slow on VPN, and turned into dark squares while zooming:
 * A tile that failed (a dropped packet on the VPN) stayed blank until the map
   was rebuilt. `TileGuard` retries it, backing off, and shows a small "loading
   basemap" note while tiles are on their way; the map stays usable meanwhile.
+* On GlobalProtect the browser's own requests to the tile hosts could fail
+  outright, leaving the map without roads, names or terrain. Each basemap and
+  overlay carries a `fallback` URL — the app's local tile relay
+  (`_tile_proxy`), which fetches through the system proxy and the Windows
+  certificate store and caches on disk — and `TileGuard` moves a layer to it
+  once its direct tiles keep failing.
 """
 
 from __future__ import annotations
@@ -67,12 +73,24 @@ def use_local_libraries(fmap: folium.Map, draw=None) -> None:
         draw.default_css = [("leaflet_draw_css", urls["draw_css"])]
 
 
-def _tile_kw(max_zoom: int, native_zoom: int | None, attr: str | None) -> dict:
+def _tile_kw(max_zoom: int, native_zoom: int | None, attr: str | None,
+             tiles: str | None = None) -> dict:
     kw = dict(max_zoom=int(max_zoom), max_native_zoom=int(native_zoom or max_zoom),
               control=False, update_when_zooming=False)
     if attr:
         kw["attr"] = attr
+    fallback = _fallback(tiles) if tiles else None
+    if fallback:
+        kw["fallback"] = fallback           # read by TileGuard: the local tile relay
     return kw
+
+
+def _fallback(tiles: str) -> str | None:
+    try:
+        from _tile_proxy import relay_url
+        return relay_url(tiles)
+    except Exception:
+        return None
 
 
 def add_basemap(fmap: folium.Map, tiles: str, *, attr: str | None = None,
@@ -81,14 +99,14 @@ def add_basemap(fmap: folium.Map, tiles: str, *, attr: str | None = None,
     native = int(native_zoom or max_zoom)
     folium.TileLayer(tiles, name="basemap-underlay", keep_buffer=1, z_index=0,
                      class_name="rf-underlay",
-                     **_tile_kw(max_zoom, min(UNDERLAY_ZOOM, native), attr)).add_to(fmap)
+                     **_tile_kw(max_zoom, min(UNDERLAY_ZOOM, native), attr, tiles)).add_to(fmap)
     folium.TileLayer(tiles, name="basemap", keep_buffer=4, z_index=1,
-                     **_tile_kw(max_zoom, native, attr)).add_to(fmap)
+                     **_tile_kw(max_zoom, native, attr, tiles)).add_to(fmap)
 
 
 def add_overlay(fmap: folium.Map, tiles: str, *, name: str, attr: str = "Esri",
                 max_zoom: int = 19, native_zoom: int | None = None, pane: str | None = None):
-    kw = _tile_kw(max_zoom, native_zoom, attr)
+    kw = _tile_kw(max_zoom, native_zoom, attr, tiles)
     if pane:
         kw["pane"] = pane
     return folium.TileLayer(tiles, name=name, overlay=True, keep_buffer=4, z_index=2,
@@ -111,7 +129,8 @@ class TileGuard(MacroElement):
         {% macro script(this, kwargs) %}
         (function () {
           var m = {{ this._parent.get_name() }};
-          var RETRIES = {{ this.retries }}, waiting = {}, n = 0, shownAt = 0, timer = null;
+          var RETRIES = {{ this.retries }}, FAILS = {{ this.fails }};
+          var waiting = {}, n = 0, shownAt = 0, timer = null;
           var note = L.control({position: 'bottomright'});
           note.onAdd = function () {
             var d = L.DomUtil.create('div', 'rf-tiles');
@@ -134,11 +153,24 @@ class TileGuard(MacroElement):
             layer.__rfGuard = true;
             var tag = L.stamp(layer) + ':';
             function id(e) { return tag + layer._tileCoordsToKey(e.coords); }
+            layer.__rfOk = 0; layer.__rfErr = 0;
             layer.on('tileloadstart', function (e) { e.tile.__rfTry = 0; add(id(e)); });
-            layer.on('tileload', function (e) { drop(id(e)); });
+            layer.on('tileload', function (e) { layer.__rfOk++; drop(id(e)); });
             layer.on('tileunload', function (e) { drop(id(e)); });
             layer.on('tileerror', function (e) {
               var t = e.tile, key = id(e), k = (t.__rfTry || 0) + 1;
+              layer.__rfErr++;
+              // the tile host keeps failing from this browser (a VPN that blocks
+              // or re-signs it): move the layer to the app's local tile relay
+              var fb = layer.options.fallback;
+              if (fb && !layer.__rfRelay && layer.__rfErr >= FAILS
+                  && layer.__rfErr > 2 * layer.__rfOk) {
+                layer.__rfRelay = true;
+                layer.__rfOk = 0; layer.__rfErr = 0;
+                waiting = {}; n = 0; sync();
+                layer.setUrl(fb);
+                return;
+              }
               if (k > RETRIES) { drop(key); return; }
               t.__rfTry = k;
               var url = layer.getTileUrl(e.coords);
@@ -154,10 +186,11 @@ class TileGuard(MacroElement):
         {% endmacro %}
     """)
 
-    def __init__(self, retries: int = 3):
+    def __init__(self, retries: int = 3, fails: int = 4):
         super().__init__()
         self._name = "TileGuard"
         self.retries = int(retries)
+        self.fails = int(fails)             # direct failures before the relay
 
 
 class MousePositionControl(MacroElement):
