@@ -254,6 +254,9 @@ class KpiCheck:
     after: str = ""
     resolution: str = ""
     resolution_note: str = ""
+    # hours with an issue from the window's start to the end of the KPI data
+    # (the window's own, then every hour after it), each hour judged on its own
+    issue_hours: int = 0
 
 
 @dataclass
@@ -331,6 +334,7 @@ def analyse_ticket(site_id, problem_time, tracks, window_h: float) -> TicketAnal
             av, at, asev = (after["v"].to_numpy(), pd.DatetimeIndex(after["t"]),
                             after["sev"].to_numpy())
             c.after = f"{_v(av[-1], tr.unit)} at {_t(at[-1])}"
+            c.issue_hours = c.breach_hours + int((asev > 0).sum())
             if c.sev > 0:
                 n_bad = int((asev > 0).sum())
                 seen = (f"{n_bad} issue hour{'s' if n_bad != 1 else ''} in the {len(asev)} h "
@@ -347,6 +351,7 @@ def analyse_ticket(site_id, problem_time, tracks, window_h: float) -> TicketAnal
                                          f"of the data — {seen}")
         else:
             c.after = "no data after the window"
+            c.issue_hours = c.breach_hours
             if c.sev > 0:
                 c.resolution = UNKNOWN
                 c.resolution_note = f"no data after the window (export ends {_t(tr.end)})"

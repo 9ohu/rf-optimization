@@ -22,6 +22,7 @@ can't do.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html as _html
 import json
@@ -51,8 +52,7 @@ from _map_ui import (AIR as _AIR, AIR_LABEL as _AIR_LABEL,
                      MAP_CSS as _LEAFLET_CSS, HomeView as _HomeView,
                      SiteLabels as _SiteLabels, TowerMarkers as _TowerMarkers,
                      tower_points as _tower_points)
-from _coverage import (Coverage as _Coverage,
-                       CoverageLayer as _CoverageLayer, compact as _cov_compact)
+from _coverage import Coverage as _Coverage, CoverageLayer as _CoverageLayer
 from _location_pick import LocationPick as _LocationPick
 from _kpi_time import js_json as _js_json, kpi_unit as _kpi_unit, parse_tip as _parse_tip
 from _sector_drawer import (KpiTimeline as _KpiTimeline, MapAssets as _MapAssets,
@@ -61,15 +61,15 @@ from _sector_drawer import (KpiTimeline as _KpiTimeline, MapAssets as _MapAssets
                             sector_kpis as _sector_kpis_json,
                             store_key as _store_key, table_json as _table_json)
 from _map_assets import (MousePositionControl as _MousePosition,
-                         TileGuard as _TileGuard, add_basemap as _add_basemap,
-                         add_overlay as _add_overlay, pin_icon as _pin_icon,
+                         add_offline_basemap as _add_offline_basemap,
+                         pin_icon as _pin_icon,
                          use_local_libraries as _use_local_libraries)
 import _resources as R
 import _complaints as _C
 import _relocate as _RL
+from rfopt.complaints.comment import ticket_comment as _ticket_comment
 from rfopt.complaints.relocate import lead_check as _lead_check, parse_latlon as _parse_loc
 from _ui import (card as _card, file_status as _file_status, header as _header,
-                 kpi_cards as _kpi_cards,
                  swatch as _swatch, title_html as _title_html)
 
 _M_PER_DEG = 111_320.0
@@ -87,36 +87,19 @@ _AIR_FILLC = _AIR
 _REGION = (30.95, 46.75, 8)          # the whole of R5
 
 
-_ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services"
-
-
-def _esri(service: str) -> str:
-    return f"{_ESRI}/{service}/MapServer/tile/{{z}}/{{y}}/{{x}}"
-
-
-# name -> base tiles (+ optional attr, transparent reference overlays, max zoom).
-# Everything is a key-free Esri / OSM endpoint (CartoDB now needs an API key).
+# the basemap modes. Every one is drawn offline, from the local map packs
+# (`rfopt.geo.offline_basemap`, `_map_assets.add_offline_basemap`): no tile
+# server is asked while the map is used. Coverage is the day satellite under
+# the measured LTE coverage grid; Night Satellite the NASA night lights under
+# the glowing street network.
 _BASEMAPS = {
-    "Dark": {
-        "tiles": _esri("Canvas/World_Dark_Gray_Base"),
-        "attr": "Tiles © Esri — Esri, DeLorme, HERE",
-        "refs": ["Canvas/World_Dark_Gray_Reference"],
-        "max_zoom": 16},
-    "Streets": {"tiles": "OpenStreetMap", "max_zoom": 19},
-    "Satellite": {
-        "tiles": _esri("World_Imagery"),
-        "attr": "Imagery © Esri, Maxar, Earthstar Geographics",
-        "refs": ["Reference/World_Transportation",
-                 "Reference/World_Boundaries_and_Places"],
-        "max_zoom": 19},
-    # satellite under the measured LTE coverage grid, roads and places on top
-    "Coverage": {
-        "tiles": _esri("World_Imagery"),
-        "attr": "Imagery © Esri, Maxar, Earthstar Geographics",
-        "refs": ["Reference/World_Transportation",
-                 "Reference/World_Boundaries_and_Places"],
-        "max_zoom": 19},
+    "Dark": {"max_zoom": 20},
+    "Streets": {"max_zoom": 20},
+    "Satellite": {"max_zoom": 20},
+    "Coverage": {"max_zoom": 20},
+    "Night Satellite": {"max_zoom": 20},
 }
+_DARK_BASEMAPS = ("Dark", "Night Satellite")      # light site names on these
 
 # the map box, and the controls that float on it
 _MAP_CSS = """
@@ -189,6 +172,7 @@ _MAP_CSS = """
 # since streamlit-folium hard-codes the map-div height at mount and never
 # listens for a resize.
 _FS_MAP_H = 940
+_MAP_H = 800             # the map beside its panel (was 640 under the KPI cards)
 _FS_CSS = """
 <style>
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
@@ -219,6 +203,145 @@ section[data-testid="stMain"] { overflow: hidden !important; }
    full-screen map, or the KPI list opens hidden behind the map */
 [data-testid="stSelectboxVirtualDropdown"] { z-index: 2147483002 !important; }
 </style>
+"""
+
+
+# The panel beside the map as a drawer. Open: the Map layers & Analysis card
+# (with a » button that folds it), Ticket ID and User Location. Folded: one
+# narrow bar down the map's side — click it to open the panel again. Only
+# classes change (`html.sm-drawer-closed`), so nothing reruns and every widget
+# keeps its state; the map re-lays itself as its frame widens.
+def _chevron(path: str, colour: str = "#20BFFF") -> str:
+    """A chevron as an <img> data URI — what st.html lets through."""
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" '
+           f'height="16"><path d="{path}" fill="none" stroke="{colour}" stroke-width="2.4" '
+           'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    return ('<img src="data:image/svg+xml;base64,'
+            + base64.b64encode(svg.encode()).decode() + '" width="16" height="16" alt="">')
+
+
+_CHEV_R, _CHEV_L = _chevron("M9 6l6 6-6 6"), _chevron("M15 6l-6 6 6 6")
+_DRAWER_CLOSE = (f'<button type="button" class="sm-drawer-x" data-sm-drawer="close" '
+                 f'title="Fold the panel — the map takes the whole width">{_CHEV_R}</button>')
+_DRAWER_BAR = (f'<div class="sm-drawer-bar" data-sm-drawer="open" role="button" tabindex="0" '
+               f'title="Open Map layers &amp; Analysis"><span class="sm-drawer-i">{_CHEV_L}'
+               '</span><span class="sm-drawer-t">Map layers &amp; Analysis</span>'
+               f'<span class="sm-drawer-i">{_CHEV_L}</span></div>')
+_DRAWER_CSS = """
+<style>
+[data-testid="stColumn"]:has(.st-key-sm_drawer_bar),
+[data-testid="stColumn"]:has(.st-key-sm_mapwrap) {
+    transition: flex-basis .34s ease, width .34s ease, min-width .34s ease,
+                max-width .34s ease;
+}
+.st-key-sm_drawer_bar { display: none !important; }
+html.sm-drawer-closed [data-testid="stColumn"]:has(.st-key-sm_drawer_bar) {
+    flex: 0 0 46px !important; width: 46px !important; min-width: 46px !important;
+    max-width: 46px !important;
+}
+html.sm-drawer-closed [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]
+    .st-key-sm_drawer_bar) { flex-wrap: nowrap !important; }
+html.sm-drawer-closed [data-testid="stColumn"]:has(.st-key-sm_mapwrap) {
+    flex: 1 1 0 !important; width: auto !important; min-width: 0 !important;
+    max-width: none !important;
+}
+html.sm-drawer-closed .st-key-sm_drawer_bar { display: block !important; }
+html.sm-drawer-closed .st-key-rf_card_layers,
+html.sm-drawer-closed .st-key-rf_card_sm_ticket,
+html.sm-drawer-closed .st-key-rf_card_sm_loc { display: none !important; }
+.sm-drawer-bar {
+    height: 800px; width: 46px; box-sizing: border-box; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: space-between; padding: 14px 0; border-radius: 12px;
+    background: linear-gradient(180deg, rgba(13, 41, 69, .92), rgba(7, 21, 37, .92));
+    border: 1px solid #1E3A5F; box-shadow: inset 0 0 0 1px rgba(32, 191, 255, .08),
+    0 4px 18px rgba(0, 0, 0, .35); color: #20BFFF; user-select: none;
+    transition: background .2s ease, border-color .2s ease;
+}
+.sm-drawer-bar:hover { border-color: #1597FF;
+    background: linear-gradient(180deg, rgba(21, 64, 107, .95), rgba(11, 31, 51, .95)); }
+.sm-drawer-t { writing-mode: vertical-rl; transform: rotate(180deg);
+    font: 700 12px 'Segoe UI', system-ui, sans-serif; letter-spacing: .14em;
+    text-transform: uppercase; color: #CBD5E1; }
+.sm-drawer-i { display: flex; }
+.st-key-rf_card_layers { position: relative; }
+.sm-drawer-x {
+    position: absolute; top: 12px; right: 12px; z-index: 5; width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+    border-radius: 8px; border: 1px solid #1E3A5F; background: #0D2945; color: #20BFFF;
+    cursor: pointer;
+}
+.sm-drawer-x:hover { background: #15406B; border-color: #1597FF; color: #fff; }
+/* the Comment: ticket-ready text, copied as it is shown */
+.sm-cm { margin-top: 10px; border: 1px solid #1E3A5F; border-radius: 10px;
+    background: rgba(7, 21, 37, .55); }
+.sm-cm-h { display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px; border-bottom: 1px solid #1E3A5F; color: #94A3B8;
+    font: 600 11px 'Segoe UI', system-ui, sans-serif; letter-spacing: .06em;
+    text-transform: uppercase; }
+.sm-cm-copy { border: 1px solid #1E3A5F; background: #0D2945; color: #20BFFF;
+    border-radius: 7px; padding: 2px 10px; font: 600 11px 'Segoe UI', system-ui,
+    sans-serif; cursor: pointer; letter-spacing: 0; text-transform: none; }
+.sm-cm-copy:hover { background: #15406B; color: #fff; }
+.sm-cm-t { margin: 0; padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+    font: 12px/1.5 'Segoe UI', system-ui, sans-serif; color: #E2E8F0;
+    background: transparent; border: 0; }
+</style>
+"""
+_DRAWER_JS = """
+<script>
+(function () {
+  var W = window.parent || window, d = W.document, root = d.documentElement;
+  var KEY = 'rf.sm.drawer';
+  function apply(closed) { root.classList.toggle('sm-drawer-closed', !!closed); }
+  try { apply(W.sessionStorage.getItem(KEY) === 'closed'); } catch (e) {}
+  if (W.__rfSmDrawer) return;
+  W.__rfSmDrawer = true;
+  function find(e, attr) {
+    var path = e.composedPath ? e.composedPath() : [e.target];
+    for (var i = 0; i < path.length; i++) {
+      var el = path[i];
+      if (el && el.getAttribute && el.hasAttribute(attr)) return el;
+    }
+    return null;
+  }
+  function copy(text, btn) {
+    function done() { var t = btn.textContent; btn.textContent = 'Copied ✓';
+                      setTimeout(function () { btn.textContent = t; }, 1400); }
+    try {
+      if (W.navigator.clipboard && W.isSecureContext) {
+        W.navigator.clipboard.writeText(text).then(done); return;
+      }
+    } catch (e) {}
+    var ta = d.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    d.body.appendChild(ta); ta.select();
+    try { d.execCommand('copy'); done(); } catch (e) {}
+    d.body.removeChild(ta);
+  }
+  function onClick(e) {
+    var t = find(e, 'data-sm-drawer');
+    if (t) {
+      var closed = t.getAttribute('data-sm-drawer') === 'close';
+      apply(closed);
+      try { W.sessionStorage.setItem(KEY, closed ? 'closed' : 'open'); } catch (e2) {}
+      return;
+    }
+    var b = find(e, 'data-sm-copy');
+    if (b) {
+      var box = b.closest('.sm-cm'), pre = box && box.querySelector('.sm-cm-t');
+      if (pre) copy(pre.textContent, b);
+    }
+  }
+  d.addEventListener('click', onClick, true);
+  d.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      var t = find(e, 'data-sm-drawer');
+      if (t) { e.preventDefault(); onClick(e); }
+    }
+  }, true);
+})();
+</script>
 """
 
 
@@ -569,7 +692,8 @@ class _Ruler(MacroElement):
 # 1. header + sidebar — the view, the KPI, the data sources
 # --------------------------------------------------------------------------- #
 fs = bool(st.session_state.get("sm_fs"))
-st.html(_MAP_CSS + (_FS_CSS if fs else ""))
+st.html(_MAP_CSS + _DRAWER_CSS + (_FS_CSS if fs else ""))
+st.html(_DRAWER_JS, unsafe_allow_javascript=True)
 st.html(_C._CSS)                # the Delay Tickets Analysis cards, charts and badges
 st.html(_C.CA2_CSS)
 
@@ -577,20 +701,26 @@ q_raw = (_header("RF Optimization", "Sites · sectors on the map",
                  search_key="sm_q",
                  placeholder="Search a site, a sector, or a lat, lon…")
          or "").strip()
-cards_slot = st.container()
 msg_slot = st.container()
 
 # the map, and beside it: 1 Map layers & Analysis (Current view and KPI analysis
 # folded into it), 2 Ticket ID, 3 User Location. In full screen the layer
 # controls float on the map, and the view / KPI widgets are kept out of sight.
+# The panel beside the map folds into a narrow drawer bar (its « / » buttons,
+# client-side, remembered for the tab): the map then takes the whole width.
 if not fs:
-    map_area, side = st.columns([3.2, 1], gap="small")
+    with st.container(key="sm_row"):
+        map_area, side = st.columns([3.2, 1], gap="small")
+    with side.container(key="sm_drawer_bar"):
+        st.html(_DRAWER_BAR)
     with side.container(key="rf_card_layers", border=True):
-        st.html(_title_html("Map layers & Analysis", "layers"))
+        st.html(_DRAWER_CLOSE + _title_html("Map layers & Analysis", "layers"))
         ctl_slot = st.container()
         view_box = st.expander("Current view", icon=":material/tune:", expanded=False)
         kpi_box = st.expander("KPI analysis", icon=":material/monitoring:",
                               expanded=False)
+        offline_box = st.expander("Offline map", icon=":material/cloud_off:",
+                                  expanded=False)
     ticket_card = side.container(key="rf_card_sm_ticket", border=True)
     loc_card = side.container(key="rf_card_sm_loc", border=True)
     legend_slot = None                     # set under the KPI list, below
@@ -598,15 +728,29 @@ else:
     map_area = st.container()
     _hidden = st.container(key="sm_fs_hidden")
     view_box, kpi_box = _hidden.container(), _hidden.container()
-    ctl_slot = ticket_card = loc_card = legend_slot = None
+    ctl_slot = ticket_card = loc_card = legend_slot = offline_box = None
 
 # every file comes from Data Resources (the Current version of each resource)
 kmz_path, ep_path = R.kmz_path(), R.ep_path()
 kmz_name = R.kmz_file().name if kmz_path else None
 
+def _comment(tk: dict) -> str:
+    """The ticket-ready Comment (`rfopt.complaints.comment`): at an approved
+    user location its serving sector, distance and RSRP; without one the
+    ticket's site."""
+    a, re_ = tk["analysis"], tk["re"]
+    if re_ is not None:
+        srv = re_.server
+        return _ticket_comment(a, sector=re_.sector_id,
+                               distance_m=srv.distance_m if srv is not None else None,
+                               rsrp=re_.rsrp, lat=re_.lat, lon=re_.lon,
+                               coverage_issue=bool(re_.coverage_issue))
+    return _ticket_comment(a, sector=tk["site"])
+
+
 def _analysis_html(tk: dict) -> str:
     """The ticket's analysis as it stands: stage 1 (general, site level) or
-    stage 2 (at the approved user location)."""
+    stage 2 (at the approved user location), and its ticket-ready Comment."""
     row, a, re_, lead = tk["row"], tk["analysis"], tk["re"], tk["lead"]
     if re_ is not None:
         at = _RL.load().get(str(row["Ticket ID"]), {}).get("at", "")
@@ -629,14 +773,14 @@ def _analysis_html(tk: dict) -> str:
              ("Azimuth difference", _C._esc(f"{re_.server.az_diff_deg:.0f}°"
                                             if re_ is not None and re_.server else _C.NA)),
              ("RSRP", _C._esc(row["RSRP"])), ("KPI result", _C._esc(kpi)),
-             ("Status", status), ("Description", _C._esc(row["Description"]))]
-    if re_ is not None and re_.neighbours:
-        # the KPI condition around the user location, sector by sector
-        pairs.append(("Neighbour sectors", _C._esc(" · ".join(
-            f"{nb.sector_id}: {nb.analysis.classification}" for nb in re_.neighbours))))
+             ("Status", status)]
     return ('<div class="ca-kv sm-an">'
             + "".join(f"<span>{_C._esc(k)}</span><b>{v}</b>" for k, v in pairs)
-            + f'</div><div class="sm-an-note">Stage {_C._esc(stage)} · correlation window '
+            + '</div><div class="sm-cm"><div class="sm-cm-h"><span>Comment</span>'
+              '<button type="button" class="sm-cm-copy" data-sm-copy title="Copy the '
+              'Comment, ready to paste into the ticket">Copy</button></div>'
+              f'<pre class="sm-cm-t">{_C._esc(_comment(tk))}</pre></div>'
+            + f'<div class="sm-an-note">Stage {_C._esc(stage)} · correlation window '
               f"{_C._esc(WIN_LABEL)} — as on Delay Tickets Analysis.</div>")
 
 
@@ -644,59 +788,6 @@ def _stage_title(tk) -> str:
     if tk is None:
         return ""
     return "Stage 2 · User location" if tk["re"] is not None else "Stage 1 · General"
-
-
-def _rsrp_panel() -> None:
-    """RSRP on its band scale — only at an approved user location: the grid
-    cell the location falls in (independent of the serving sector). Without a
-    user location there is no RSRP analysis."""
-    re_ = TK["re"] if TK is not None else None
-    st.html(_title_html("RSRP", "signal", subtitle="user location"))
-    if TK is None:
-        st.caption("Search a Ticket ID to see its RSRP.")
-        return
-    if re_ is not None:
-        cust_txt = (f"{re_.rsrp:.1f} dBm ({re_.rsrp_note})" if re_.rsrp is not None
-                    else f"Not available — {re_.rsrp_note}")
-        sec_txt = (f"{re_.sector_id} · {TK['row']['Distance']}" if re_.server
-                   else "Not available")
-    else:
-        cust_txt = "Not analysed — no approved user location"
-        sec_txt = "Not available"
-    value = re_.rsrp if re_ is not None and re_.rsrp is not None else None
-    point = {"median": value} if value is not None else None
-    _, scale, _ = _C.rsrp_row(point, CTX.bands, bool(CTX.cov_kept))
-    band = _C.rsrp_band(point, CTX.bands)
-    if band is not None:
-        state = " · Coverage Issue" if re_.coverage_issue else ""
-        status = (f'<div class="ca-evs" style="--c:{band.colour}">'
-                  f'<div class="ca-evs-h">{_C._esc(band.label + state)}</div>'
-                  f'<div class="ca-evs-v">{value:.1f} dBm</div>'
-                  f'<div class="ca-evs-p">user location</div></div>')
-    elif re_ is not None and re_.no_grid:
-        status = ('<div class="ca-evs" style="--c:#EF4444"><div class="ca-evs-h">'
-                  'Poor coverage · Coverage Issue</div><div class="ca-evs-p">'
-                  "No RSRP grid at the user location</div></div>")
-    else:
-        status = ('<div class="ca-evs" style="--c:#64748B"><div class="ca-evs-h">— No data</div>'
-                  '<div class="ca-evs-p">'
-                  + ("RSRP is read only at an approved user location" if re_ is None
-                     else "No coverage grid in Coverage Data (Data Resources)")
-                  + "</div></div>")
-    st.html('<div class="sm-rs"><div class="ca-kv sm-an">'
-            + "".join(f"<span>{_C._esc(k)}</span><b>{_C._esc(v)}</b>" for k, v in (
-                ("Customer location", cust_txt), ("Sector / distance", sec_txt)))
-            + f"</div>{scale}{status}</div>")
-
-
-def _ticket_info_panel() -> None:
-    st.html(_title_html("Ticket Information", "ticket"))
-    if TK is None:
-        st.caption("Search a Ticket ID to see its information.")
-        return
-    # the Ticket Details fields, in the panels' shared label / value layout
-    st.html(_C._kv(_C.ticket_info_rows(CTX, TK["row"])).replace(
-        'class="ca-kv"', 'class="ca-kv sm-an"', 1))
 
 
 def _analysis_panel() -> None:
@@ -707,21 +798,61 @@ def _analysis_panel() -> None:
     st.html(_analysis_html(TK))
 
 
-def _main_kpi_panel() -> None:
-    st.html(_title_html("Main Issue KPI", "chart"))
-    if TK is None:
-        st.caption("Search a Ticket ID to see its main issue KPI.")
-        return
-    items = _C.evidence_items(CTX, TK["row"])
+def _kpi_chart(items: list, *, key: str, where: str, empty: str) -> None:
+    """A KPI picker (the issue KPIs first) and the chart of the one picked:
+    the Delay Tickets Analysis evidence chart, every cell its own line."""
     if not items:
-        st.caption("No KPI above its threshold, and no context indicator detected, in the "
-                   f"correlation window ({WIN_LABEL}).")
+        st.caption(empty)
         return
-    item = items[0]
-    where = TK["sector"] if TK["re"] is not None else TK["site"]
-    st.caption(f"{item['tag']} - {item['name']} · {where} · {item['state']} {item['value']}")
-    st.plotly_chart(_C.evidence_figure(item, WIN_LABEL), key="sm_main_kpi",
+    labels = [f"{it['tag']} - {it['name']} · {it['state']}" for it in items]
+    if ss.get(f"{key}_pick", 0) not in range(len(items)):
+        ss[f"{key}_pick"] = 0
+    pick = st.selectbox("KPI", list(range(len(items))), key=f"{key}_pick",
+                        format_func=lambda i: labels[i], label_visibility="collapsed")
+    item = items[pick]
+    st.caption(f"{where} · {item['state']} {item['value']}"
+               + (f" · {item['threshold']}" if item.get("threshold") else ""))
+    st.plotly_chart(_C.evidence_figure(item, WIN_LABEL), key=f"{key}_fig",
                     config={"displayModeBar": False}, width="stretch")
+
+
+def _serving_kpi_panel() -> None:
+    where = (TK["sector"] if TK is not None and TK["re"] is not None
+             else TK["site"] if TK is not None else "")
+    st.html(_title_html("Serving Site KPI", "chart", subtitle=where))
+    if TK is None:
+        st.caption("Search a Ticket ID to see its serving site's KPIs.")
+        return
+    _kpi_chart(_C.serving_kpi_items(CTX, TK["row"]), key="sm_srv", where=where or _C.NA,
+               empty="No judged KPI of the serving "
+                     + ("sector" if TK["re"] is not None else "site")
+                     + f" has data in the correlation window ({WIN_LABEL}).")
+
+
+def _neighbour_kpi_panel() -> None:
+    st.html(_title_html("Neighbour Sector KPI", "tower"))
+    if TK is None:
+        st.caption("Search a Ticket ID to see its neighbour sectors' KPIs.")
+        return
+    re_ = TK["re"]
+    if re_ is None:
+        st.caption("Neighbour sectors are the sectors of other sites facing the user "
+                   "location — approve the subscriber's location in User Location.")
+        return
+    nbs = list(re_.neighbours or [])
+    if not nbs:
+        st.caption("No sector of another site faces the user location.")
+        return
+    if ss.get("sm_nb_sec", 0) not in range(len(nbs)):
+        ss["sm_nb_sec"] = 0
+    j = st.selectbox("Neighbour sector", list(range(len(nbs))), key="sm_nb_sec",
+                     format_func=lambda i: f"{nbs[i].sector_id} · "
+                                           f"{nbs[i].analysis.classification}",
+                     label_visibility="collapsed")
+    nb = nbs[j]
+    _kpi_chart(_C.neighbour_kpi_items(CTX, TK["row"], nb), key="sm_nb", where=nb.sector_id,
+               empty=f"No judged KPI of {nb.sector_id} has data in the correlation "
+                     f"window ({WIN_LABEL}).")
 
 
 # --------------------------------------------------------------------------- #
@@ -756,6 +887,12 @@ def _loc_clear() -> None:
     if ss.get("sm_tid_open"):
         _RL.clear(ss["sm_tid_open"])
 
+
+# a ticket handed over by Delay Tickets Analysis (Open in Site Map): searched
+# here as if typed, before the Ticket ID field is drawn
+if "sm_tid_next" in ss:
+    ss["sm_tid"] = ss["sm_tid_in"] = str(ss.pop("sm_tid_next"))
+    ss.pop("sm_tid_rev", None)
 
 TK = None            # the ticket searched: its row, analysis, stage-2 result
 _tid_q = (ss.get("sm_tid") or "").strip()
@@ -817,8 +954,19 @@ if ticket_card is not None:
             st.caption(ctx_error or "No Daily Target in Data Resources → Complaint Data.")
         elif _tid_q and TK is None:
             st.caption(f"No Daily Target ticket matches “{_tid_q}”.")
-        elif TK is not None and TK["matches"] > 1:
-            st.caption(f"{TK['matches']} tickets match — showing {TK['row']['Ticket ID']}.")
+        elif TK is not None:
+            _r = TK["row"]
+            _pt = _r["Problem Time"]
+            st.caption(" · ".join(x for x in (
+                str(_r["Ticket ID"]), str(_r["_complaint"] or ""), TK["site"] or "no site",
+                f"problem {_pt:%d %b %H:%M}" if pd.notna(_pt) else "") if x)
+                + (f" — {TK['matches']} tickets match" if TK["matches"] > 1 else ""))
+        # the same ticket on Delay Tickets Analysis, opened in its Ticket Details
+        if st.button("Open in Delay Tickets Analysis", icon=":material/open_in_new:",
+                     key="sm_open_ca", width="stretch", disabled=TK is None,
+                     help="This ticket in Delay Tickets Analysis → Ticket Details"):
+            _C.open_ticket(TK["row"]["Ticket ID"])
+            st.switch_page("views/complaint_analysis.py")
 
 if loc_card is not None:
     with loc_card:
@@ -1239,7 +1387,9 @@ def _layer_controls():
     basemap = st.segmented_control(
         "Basemap", list(_BASEMAPS), default="Dark", required=True,
         key="sm_basemap", width="stretch",
-        help="Satellite shows clutter / water / terrain behind the beams.")
+        help="Satellite shows clutter / water / terrain behind the beams; Night "
+             "Satellite the city lights and the lit street network. Every basemap "
+             "is drawn offline from the local map packs (Offline map, below).")
     lc = st.columns(2)
     show_beams = lc[0].checkbox("Sector beams", True, key="sm_l_beam")
     show_towers = lc[1].checkbox("Towers", True, key="sm_l_tower")
@@ -1379,21 +1529,15 @@ with map_area, st.container(key="sm_mapwrap"):
     start_loc, start_zoom = [_REGION[0], _REGION[1]], _REGION[2]
 
     _bm = _BASEMAPS.get(basemap, _BASEMAPS["Dark"])
-    _mz = _bm.get("max_zoom", 19)
+    _mz = _bm.get("max_zoom", 20)
     fmap = folium.Map(location=start_loc, zoom_start=start_zoom, prefer_canvas=True,
                       control_scale=True, tiles=None, max_zoom=_mz)
-    # the basemap over a soft copy of itself, loaded once a zoom ends and
-    # retried when a tile fails (`_map_assets`): no dark squares while zooming
-    _add_basemap(fmap, _bm["tiles"], attr=_bm.get("attr"), max_zoom=_mz)
     if coverage_mode:
         # the coverage grid sits under the roads and place names; beams and
         # towers stay above both
         CustomPane("rfCoverage", z_index=250).add_to(fmap)
         CustomPane("rfRefs", z_index=300).add_to(fmap)
-    for _ref in _bm.get("refs", []):                 # roads + place names on top
-        _add_overlay(fmap, _esri(_ref), name=_ref.split("/")[-1], max_zoom=_mz,
-                     pane="rfRefs" if coverage_mode else None)
-    _dark = basemap == "Dark"
+    _dark = basemap in _DARK_BASEMAPS
     _lbl_fg, _lbl_halo = ("#f0f0f0", "#000") if _dark else ("#111", "#fff")
     # the map lives in an iframe: its dark controls, tower badges and cards
     # need their styles inside it. Leave room at the top-right for the
@@ -1415,6 +1559,9 @@ with map_area, st.container(key="sm_mapwrap"):
          edit_options={"edit": False, "remove": True}).add_to(fmap)
     # Leaflet and Leaflet.draw from the app itself; nothing else from a CDN
     _use_local_libraries(fmap, _draw)
+    # the basemap from the local map packs — offline, no tile server
+    _add_offline_basemap(fmap, basemap if basemap in _BASEMAPS else "Dark",
+                         ref_pane="rfRefs" if coverage_mode else None)
     # the marker tool, right under draw-circle and delete: one marker with its
     # latitude / longitude live while dragged, and a copy button - no reload
     fmap.add_child(_LocationPick())
@@ -1434,8 +1581,6 @@ with map_area, st.container(key="sm_mapwrap"):
         kpi_band, kpi_val = bands.to_dict(), _vals.to_dict()
         _band_colour = {k: c for k, c, _ in kpi_legend}
         _band_colour["none"] = _KPI_BAND["none"]
-    _drawn = pd.Series([kpi_band.get(s, "none") for s in draw["sector_id"]],
-                       dtype=object)
 
     fg_beams = folium.FeatureGroup(name="Sector beams", show=True)
     bf, hits = [], []
@@ -1591,7 +1736,6 @@ with map_area, st.container(key="sm_mapwrap"):
     if cov is not None:
         fmap.add_child(_CoverageLayer(cov.layer_config()))
 
-    fmap.add_child(_TileGuard())
     fmap.add_child(_ViewKeep(jump=_jump))
 
     # `returned_objects` is deliberately tiny: only a sector-beam click or a new
@@ -1599,7 +1743,7 @@ with map_area, st.container(key="sm_mapwrap"):
     # 100% client-side (no rerun, no reload flash) — `_ViewKeep` remembers the
     # view instead.
     out = st_folium(fmap, key="sm_folium",
-                    height=_FS_MAP_H if fs else 640, use_container_width=True,
+                    height=_FS_MAP_H if fs else _MAP_H, use_container_width=True,
                     returned_objects=["last_object_clicked_tooltip",
                                       "all_drawings"])
     with st.container(key="sm_drawer_payload"):
@@ -1624,71 +1768,16 @@ if _drawings is not None and _drawings != saved:
     saved = _drawings
     st.rerun()
 
+# the offline map packs, and the one explicit update (the Internet, once)
+if offline_box is not None:
+    with offline_box:
+        from _offline_map_ui import offline_map_box as _offline_map_box
+        from rfopt.geo.offline_basemap import region_bbox as _region_bbox
+        _offline_map_box(_region_bbox(SITES["latitude"], SITES["longitude"]))
+
 # --------------------------------------------------------------------------- #
-# 4. status cards (top), the legend card (beside the map), info panels
+# 4. the legend card (beside the map), the panels under the map
 # --------------------------------------------------------------------------- #
-_topo_lbl = topo if topology == "All" else f"{topo} · {topology}"
-_view_ids = set(SECT_view["sector_id"])
-_cells = (int(CELLS["sector_id"].isin(_view_ids).sum()) if topo == "All" else
-          int((CELLS["technology"].eq(topo)
-               & CELLS["sector_id"].isin(_view_ids)).sum()))
-_cards = [dict(title="Total Sites", value=f"{SITES['site_id'].nunique():,}",
-               icon="tower", tone="blue",
-               note=f"{len(SECT_view):,} sectors ({_topo_lbl}) · "
-                    f"{_cells:,} cells")]
-_n_draw = max(len(draw), 1)
-_bc = _drawn.value_counts()
-_txt = {k: t for k, _, t in kpi_legend}
-if coverage_mode and cov is not None:
-    _s = cov.stats
-    _weak = cov.weak_pct()
-    _fair_lo = next(b.lo for b in cov.bands if b.key == "fair")
-    _cards += [
-        dict(title="Coverage", value=f"{_s['covered_pct']:.1f}%", icon="check",
-             tone="green", pct=_s["covered_pct"],
-             note=f"MRs in grids ≥ {_s['covered_dbm']:g} dBm"),
-        dict(title="Weak Coverage", value=f"{_weak:.1f}%", icon="alert",
-             tone="orange", pct=_weak, note=f"MRs in grids < {_fair_lo:g} dBm"),
-        dict(title="Samples", value=_cov_compact(_s["mrs"]), icon="chart",
-             tone="blue", note=f"MRs · {_s['grids']:,} grids · {cov.sources}")]
-elif kpi_col and kpi_legend and "warning" in _txt:
-    _good = int(sum(v for k, v in _bc.items() if str(k).startswith("ok")))
-    _warn, _crit = int(_bc.get("warning", 0)), int(_bc.get("critical", 0))
-    _cards += [
-        dict(title="Good KPI", value=f"{_good:,}", icon="check", tone="green",
-             pct=100 * _good / _n_draw, note=f"sectors OK · {kpi_name}", data="good"),
-        dict(title="Needs Attention", value=f"{_warn:,}", icon="alert",
-             tone="amber", pct=100 * _warn / _n_draw,
-             note=f"sectors in warning {_txt['warning']}", data="warning"),
-        dict(title="Critical", value=f"{_crit:,}", icon="x", tone="red",
-             pct=100 * _crit / _n_draw,
-             note=f"sectors critical {_txt['critical']}", data="critical")]
-elif kpi_col and kpi_legend:
-    # no threshold for this KPI: nothing is good or bad, only measured
-    _none = int(_bc.get("none", 0))
-    _top_key, _, _top_txt = kpi_legend[-1]
-    _top_n = int(_bc.get(_top_key, 0))
-    _cards += [
-        dict(title="Measured Sectors", value=f"{len(draw) - _none:,}",
-             icon="chart", tone="blue", pct=100 * (len(draw) - _none) / _n_draw,
-             note=kpi_name, data="measured"),
-        dict(title="Highest Range", value=f"{_top_n:,}", icon="chart",
-             tone="orange", pct=100 * _top_n / _n_draw,
-             note=f"sectors in {_top_txt}", data="top"),
-        dict(title="No Data", value=f"{_none:,}", icon="info", tone="gray",
-             pct=100 * _none / _n_draw, note="sectors the file does not cover", data="none")]
-else:
-    _air_n = lbl["air"].value_counts()
-    _n_lbl = max(len(lbl), 1)
-    for _k, _t, _note in (("onair", "On Air", "sites on the map"),
-                          ("planned", "Planned", "sites not yet on air"),
-                          ("offair", "Off Air", "sites off air")):
-        _cards.append(dict(title=_t, value=f"{int(_air_n.get(_k, 0)):,}",
-                           icon="tower", tone=_AIR_LINE[_k],
-                           pct=100 * int(_air_n.get(_k, 0)) / _n_lbl,
-                           note=_note))
-with cards_slot:
-    _kpi_cards(_cards)
 
 if legend_slot is not None:
     with legend_slot:
@@ -1712,15 +1801,14 @@ if legend_slot is not None:
                   note="The legend on the map counts the sectors at the time on "
                        "its time bar; click a sector for its details.")
 
-# under the map, one row of four panels of one size: RSRP · Ticket Information
-# · Analysis Result · Main Issue KPI (a long panel scrolls inside its card)
-_PANEL_H = 440
+# under the map, one row of three panels of one size: Serving Site KPI ·
+# Neighbour Sector KPI · Analysis Result (a long panel scrolls inside its card)
+_PANEL_H = 460
 with st.container(key="sm_bottom"):
-    _p = st.columns(4, gap="small")
-    for _col, _key, _draw in ((_p[0], "rf_card_sm_rsrp", _rsrp_panel),
-                              (_p[1], "rf_card_sm_tinfo", _ticket_info_panel),
-                              (_p[2], "rf_card_sm_result", _analysis_panel),
-                              (_p[3], "rf_card_sm_kpi", _main_kpi_panel)):
+    _p = st.columns(3, gap="small")
+    for _col, _key, _draw in ((_p[0], "rf_card_sm_srvkpi", _serving_kpi_panel),
+                              (_p[1], "rf_card_sm_nbkpi", _neighbour_kpi_panel),
+                              (_p[2], "rf_card_sm_result", _analysis_panel)):
         with _col, st.container(key=_key, border=True, height=_PANEL_H):
             _draw()
 # read-out for whatever is drawn
@@ -1748,16 +1836,6 @@ if saved:
     if cb.button("Clear drawings", icon=":material/delete:", width="stretch"):
         st.session_state["sm_draw"] = []
         st.rerun()
-
-# --- nearest-sites panel ------------------------------------------------- #
-if nearest_panel is not None:
-    tbl, best = nearest_panel
-    if best:
-        _, bsid, bsec, boff, bd = best
-        st.success(f"**Best-pointed serving sector: {bsid}-S{bsec}** — "
-                   f"{bd:.0f} m away, {boff:.0f}° off its azimuth.")
-    st.dataframe(tbl.drop(columns=["lat", "lon"]), width="stretch",
-                 hide_index=True)
 
 # --------------------------------------------------------------------------- #
 # 7. full-screen: streamlit-folium pins the Leaflet map-div height at mount and

@@ -54,7 +54,10 @@ def test_the_app_serves_its_static_folder_and_the_sites_map_uses_it():
     config = (ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
     assert re.search(r"^enableStaticServing\s*=\s*true", config, re.M)
     page = (APP / "views" / "site_map.py").read_text(encoding="utf-8")
-    assert "_use_local_libraries(fmap, _draw)" in page and "_TileGuard()" in page
+    assert "_use_local_libraries(fmap, _draw)" in page
+    # its basemap is offline: drawn from the local map packs, no tile server to
+    # retry (tests/test_offline_basemap.py)
+    assert "_add_offline_basemap(fmap" in page and "_TileGuard()" not in page
     assert "folium.Icon(" not in page and not re.search(r"(?<![\w])MousePosition\(", page)
     # opening a sector does not rebuild the map: the drawer rides in the map
     # without data, and the selected site's data is published beside it

@@ -953,6 +953,55 @@ def _cell_series(tr, key: str, prefix: str = "") -> list[tuple]:
     return out
 
 
+def _check_item(c, tr, key: str, pt, window_h: float, cells: list) -> dict:
+    """One judged KPI check as a chart item: the key's hourly state over the
+    whole period, its window, and every cell as its own series."""
+    h = tr.hourly(key)                      # the hour's worst cell: the timeline's state
+    wt, wv, lo, hi = window_series(h["t"], h["v"], pt, window_h)
+    all_v = h["v"].to_numpy(dtype=float)
+    return dict(key=c.canon, tag=_CANON_TILE.get(c.canon, c.label), name=c.label,
+                unit=c.unit, times=wt, values=wv, all_times=pd.DatetimeIndex(h["t"]),
+                all_values=all_v, all_sev=h["sev"].tolist(), cells=cells,
+                sev=[severity(tr.rule, v) for v in wv], rule=tr.rule, lo=lo, hi=hi,
+                pt=pt, judged=True, level=True, state=c.status, state_sev=c.sev,
+                value=fmt(c.worst, c.unit), at=c.worst_at, obj=c.worst_obj,
+                threshold=c.threshold, span=c.breach_span, hours=c.hours,
+                resolution=c.resolution, resolution_note=c.resolution_note,
+                before=c.before, note="")
+
+
+def kpi_items(tracks, key: str, analysis, pt, window_h: float) -> list[dict]:
+    """Every judged KPI of one site or sector (`key`) with data in the window —
+    the ones with an issue first, then the main KPIs — each drawn on all of its
+    cells. The Sites map's Serving Site KPI and Neighbour Sector KPI panels."""
+    if not key or key == NA or pt is None or pd.isna(pt):
+        return []
+    order = sorted([c for c in analysis.checks if c.sev >= 0],
+                   key=lambda c: (-c.sev, c.canon not in MAIN, -c.breach_hours))
+    items = []
+    for c in order:
+        tr = next((t for t in tracks if t.label == c.label and t.source == c.source
+                   and key in t.by_site), None)
+        if tr is not None:
+            items.append(_check_item(c, tr, key, pt, window_h, _cell_series(tr, key)))
+    return items
+
+
+def serving_kpi_items(ctx, sel) -> list[dict]:
+    """The Serving Site KPI panel: the serving sector at an approved user
+    location, else the ticket's site — every judged KPI, on all of its cells."""
+    i = int(sel["_i"])
+    re_ = getattr(ctx, "re", {}).get(i)
+    tracks, key = (re_.tracks, re_.key) if re_ is not None else (ctx.tracks, sel["Site ID"])
+    return kpi_items(tracks, key, ctx.analysis[i], sel["Problem Time"], ctx.window_h)
+
+
+def neighbour_kpi_items(ctx, sel, nb) -> list[dict]:
+    """The Neighbour Sector KPI panel: one neighbour sector, on all of its cells."""
+    return kpi_items(nb.tracks, nb.sector_id, nb.analysis, sel["Problem Time"],
+                     ctx.window_h)
+
+
 def evidence_items(ctx, sel) -> list[dict]:
     """The KPIs behind a ticket's evidence: the judged KPIs above threshold in the
     Correlation Window, then the context indicators that saw something there.
@@ -975,25 +1024,13 @@ def evidence_items(ctx, sel) -> list[dict]:
                    and key in t.by_site), None)
         if tr is None:
             continue
-        h = tr.hourly(key)                  # the hour's worst cell: the timeline's state
-        times, vals, _ = tr.by_site[key]
-        wt, wv, lo, hi = window_series(h["t"], h["v"], pt, ctx.window_h)
         cells = _cell_series(tr, key)
         for nb in (getattr(re_, "neighbours", None) or []):
             ntr = next((t for t in nb.tracks if t.label == c.label and nb.sector_id in t.by_site),
                        None)
             if ntr is not None:
                 cells += _cell_series(ntr, nb.sector_id, prefix=f"{nb.sector_id} · ")
-        all_v = h["v"].to_numpy(dtype=float)
-        items.append(dict(key=c.canon, tag=_CANON_TILE.get(c.canon, c.label), name=c.label,
-                          unit=c.unit, times=wt, values=wv, all_times=pd.DatetimeIndex(h["t"]),
-                          all_values=all_v, all_sev=h["sev"].tolist(), cells=cells,
-                          sev=[severity(tr.rule, v) for v in wv], rule=tr.rule, lo=lo, hi=hi,
-                          pt=pt, judged=True, level=True, state=c.status, state_sev=c.sev,
-                          value=fmt(c.worst, c.unit), at=c.worst_at, obj=c.worst_obj,
-                          threshold=c.threshold, span=c.breach_span, hours=c.hours,
-                          resolution=c.resolution, resolution_note=c.resolution_note,
-                          before=c.before, note=""))
+        items.append(_check_item(c, tr, key, pt, ctx.window_h, cells))
     for tr, ic in zip(ctx.inds, observe_indicators(site, pt, ctx.inds, ctx.window_h)):
         if site == NA or ic.sev <= 0 or site not in tr.by_site:
             continue

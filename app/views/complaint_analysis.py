@@ -115,8 +115,8 @@ if mode == TICKET_VIEW:
     sel = T[T["Ticket ID"] == tid].iloc[0]
     pos = order.index(tid)
     with st.container(key="rf_card_ca_pick", border=True):
-        b0, b1, b2, b3, b4 = st.columns([1.3, 4.6, 1.2, 1.1, 1.4], gap="small",
-                                        vertical_alignment="center")
+        b0, b1, b2, b3, b4, b5 = st.columns([1.3, 4.1, 1.2, 1.1, 1.4, 1.7], gap="small",
+                                            vertical_alignment="center")
         b0.button("Overview", icon=":material/arrow_back:", key="ca_back", width="stretch",
                   on_click=_to_overview, help="Back to the overview")
         b1.selectbox("Ticket", order, key="ca_pick", format_func=lambda t: labels.get(t, t),
@@ -129,6 +129,11 @@ if mode == TICKET_VIEW:
         open_site = b4.button("Site tickets", icon=":material/cell_tower:", key="ca_site_btn_t",
                               width="stretch", disabled=sel["Site ID"] == NA,
                               help="Every ticket of this site")
+        # the same ticket on the Sites map: its search opens it there
+        if b5.button("Open in Site Map", icon=":material/map:", key="ca_open_sm",
+                     width="stretch", help="This ticket on the Sites map"):
+            ss["sm_tid_next"] = tid          # taken by the Sites map before it draws
+            st.switch_page("views/site_map.py")
         st.caption(f"Ticket {pos + 1:,} of {len(order):,} · "
                    + ("Previous / Next follow the overview table and its filters" if order is shown
                       else "Previous / Next follow the Daily Target"))

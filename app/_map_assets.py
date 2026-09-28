@@ -47,6 +47,14 @@ _CDN = {"leaflet_js": "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.j
         "draw_css": "https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.2/leaflet.draw.css"}
 UNDERLAY_ZOOM = 10
 
+# the offline basemap (Sites map): protomaps-leaflet + pmtiles, and the app's
+# own layer builder, all from app/static/vendor/protomaps
+PROTOMAPS = VENDOR / "protomaps"
+_PM_FILES = {"pmtiles": "protomaps/pmtiles.js", "protomaps": "protomaps/protomaps-leaflet.js"}
+_PM_CDN = {"pmtiles": "https://cdn.jsdelivr.net/npm/pmtiles@4.5.0/dist/pmtiles.js",
+           "protomaps": "https://cdn.jsdelivr.net/npm/protomaps-leaflet@5.1.0/dist/"
+                        "protomaps-leaflet.js"}
+
 
 def served_locally() -> bool:
     """The vendored libraries are on disk and the app serves its static folder."""
@@ -226,6 +234,50 @@ class MousePositionControl(MacroElement):
         self._name = "MousePositionControl"
         self.prefix = json.dumps(prefix)
         self.digits = int(digits)
+
+
+class OfflineBasemap(MacroElement):
+    """The Sites map's basemap from the local map packs (no tile server)."""
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+        {{ this.builder }}
+        rfBasemap({{ this._parent.get_name() }}, {{ this.cfg }});
+        {% endmacro %}
+    """)
+
+    def __init__(self, cfg: dict):
+        super().__init__()
+        self._name = "OfflineBasemap"
+        self.cfg = json.dumps(cfg)
+        self.builder = (PROTOMAPS / "rf-basemap.js").read_text(encoding="utf-8")
+
+
+def offline_basemap_config(mode: str, *, ref_pane: str | None = None,
+                           lang: str = "en") -> dict:
+    """What the page tells `rfBasemap`: the mode, where the packs are served,
+    and which are installed."""
+    from rfopt.geo.offline_basemap import PACKS, installed
+    try:
+        from _tile_proxy import packs_url
+        base = packs_url()
+    except Exception:
+        base = None
+    return {"mode": mode, "base": base, "lang": lang, "refPane": ref_pane,
+            "packs": {k: {"file": p.file, "native_max": p.native_max,
+                          "attribution": p.attribution, "installed": installed(k)}
+                      for k, p in PACKS.items()}}
+
+
+def add_offline_basemap(fmap: folium.Map, mode: str, *, ref_pane: str | None = None) -> dict:
+    """Draw `mode` (Dark, Streets, Satellite, Coverage, Night Satellite) from the
+    local packs. Call after `use_local_libraries`: the two libraries join the
+    map's own, after Leaflet."""
+    local = served_locally() and all((VENDOR / f).exists() for f in _PM_FILES.values())
+    fmap.default_js = list(fmap.default_js) + [
+        (key, f"{LOCAL}/{f}" if local else _PM_CDN[key]) for key, f in _PM_FILES.items()]
+    cfg = offline_basemap_config(mode, ref_pane=ref_pane)
+    fmap.add_child(OfflineBasemap(cfg))
+    return cfg
 
 
 def pin_icon(colour: str, glyph: str = "") -> folium.DivIcon:

@@ -116,23 +116,27 @@ def test_a_kpi_the_export_only_has_per_site_falls_back_to_the_site():
 # --------------------------------------------------------------------------- #
 # the pages: Sites map search -> approve -> Delay Tickets Analysis agrees
 # --------------------------------------------------------------------------- #
-def _kmz() -> bytes:
-    def balloon(sec, az):
-        return (f"<b>Alpha_BAS0001</b><br/>Site Code: BAS0001 &nbsp; Sector: {sec} &nbsp; "
+def _kmz(extra=()) -> bytes:
+    """The site KMZ: BAS0001 (three sectors at SITE), plus `extra` sites as
+    (site, (lat, lon), [(sector, azimuth), ...])."""
+    def balloon(site, sec, az):
+        return (f"<b>Alpha_{site}</b><br/>Site Code: {site} &nbsp; Sector: {sec} &nbsp; "
                 f"Azimuth: {az}&deg;<br/>Height: 30 m &nbsp; Status: On Air<br/><br/>"
                 "<b>4G (LTE) Cells</b><br/>"
-                f"<u>L_Alpha_BAS0001-{sec}</u>: Azimuth={az}&deg;, PCI=9{sec}, EARFCN=1750, "
+                f"<u>L_Alpha_{site}-{sec}</u>: Azimuth={az}&deg;, PCI=9{sec}, EARFCN=1750, "
                 "BW=20MHz, Status=Active<br/>")
 
-    def pm(b):
-        lon, lat = SITE[1], SITE[0]
+    def pm(b, at):
+        lat, lon = at
         return (f"<Placemark><styleUrl>#onair</styleUrl><description><![CDATA[{b}]]>"
                 "</description><Polygon><outerBoundaryIs><LinearRing><coordinates>"
                 f"{lon},{lat},0 {lon + 0.001},{lat + 0.001},0 {lon},{lat},0"
                 "</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>")
 
+    sites = [("BAS0001", SITE, [(1, 0), (2, 120), (3, 240)]), *extra]
     kml = ("<?xml version='1.0'?><kml><Document>"
-           + "".join(pm(balloon(s, az)) for s, az in ((1, 0), (2, 120), (3, 240)))
+           + "".join(pm(balloon(site, sec, az), at)
+                     for site, at, secs in sites for sec, az in secs)
            + "</Document></kml>")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -159,28 +163,35 @@ def test_a_ticket_searched_on_the_map_and_re_analysed_at_the_user(tmp_path, monk
     at.run()
     assert not at.exception, at.exception
     text = " ".join(_html(at))
-    # the sidebar sections are gone; four panels of one size under the map
-    for gone in ("Map symbols", "Worst sectors", "Worst Areas", "LTE coverage", "Site status"):
+    # the sidebar sections are gone; three panels of one size under the map
+    for gone in ("Map symbols", "Worst sectors", "Worst Areas", "LTE coverage", "Site status",
+                 "Ticket Information", "Main Issue KPI", "Site area RSRP"):
         assert gone not in text, gone
-    for part in ("Map layers &amp; Analysis", "Ticket ID", "User Location", "RSRP",
-                 "Ticket Information", "Analysis Result", "Main Issue KPI"):
+    for part in ("Map layers &amp; Analysis", "Ticket ID", "User Location",
+                 "Serving Site KPI", "Neighbour Sector KPI", "Analysis Result"):
         assert part in text, part
     src = (APP / "views" / "site_map.py").read_text(encoding="utf-8")
-    assert 'st.columns(4, gap="small")' in src and "height=_PANEL_H" in src
+    assert 'st.columns(3, gap="small")' in src and "height=_PANEL_H" in src
     assert not at.sidebar.get("expandable")               # nothing left in the sidebar
+    # no KPI cards over the map any more
+    assert 'class="rf-kpi"' not in text
 
     # stage 1: the ticket, its general analysis, the map on its worst sector
     at.text_input(key="sm_tid_in").set_value("IM1").run()
     assert not at.exception, at.exception
     text = " ".join(_html(at))
-    assert "CC-1" in text and "IM1" in text
+    caps = " ".join(c.value for c in at.caption)
+    assert "CC-1 · IM1 · BAS0001 · problem 13 Sep 16:20" in caps
     # no user location: the site's cells are analysed, no serving sector is picked
     assert "1 · General analysis (site level)" in text
     assert "no user location: the site&#x27;s cells are analysed" in text or \
         "no user location: the site's cells are analysed" in text
     assert "(worst cell)" not in text
     assert at.session_state.get("sm_sel_sector") != "BAS0001-S1"
-    assert len(at.get("plotly_chart")) == 1                # the main issue KPI only
+    assert len(at.get("plotly_chart")) == 1                # the serving site's KPI only
+    assert "Comment" in text and "sector Expansion Needed" in text
+    assert "Neighbour sectors are the sectors of other sites facing the user" in " ".join(
+        c.value for c in at.caption)
     assert at.button(key="sm_loc_go").disabled
 
     # a location typed is not analysed until it is approved
@@ -194,9 +205,13 @@ def test_a_ticket_searched_on_the_map_and_re_analysed_at_the_user(tmp_path, monk
     assert "2 · User location" in text
     assert "<span>Serving sector</span><b>BAS0001-S2</b>" in text
     assert NO_ISSUE in text and at.session_state["sm_sel_sector"] == "BAS0001-S2"
-    # RSRP: no coverage grid here — the panel says so, the customer location is known
-    assert "<span>Sector / distance</span><b>BAS0001-S2 · 300 m</b>" in text
-    assert "No coverage grid in Coverage Data" in text
+    # the Comment: no network issue at the serving sector, its facts, the advice
+    assert "No Network Issue Detected" in text
+    assert "customer’s serving site sector BAS0001-S2 with distance 300m" in text
+    assert "All technical checks were normal with no faults dedicated" in text
+    # neither the neighbour list nor the Description is in the Analysis Result
+    assert "<span>Neighbour sectors</span>" not in text
+    assert "<span>Description</span>" not in text
 
     # the same ticket on Delay Tickets Analysis: one result
     ca = AppTest.from_file(str(APP / "views/complaint_analysis.py"), default_timeout=300)
@@ -244,12 +259,11 @@ def test_the_rsrp_row_reads_every_area_field_optionally():
         assert "No data" in status
 
 
-@pytest.mark.parametrize("approved", [False, True], ids=["no-user-location", "approved"])
 @pytest.mark.parametrize("grid", ["none", "value", "no-grid-here"])
-def test_the_site_map_rsrp_panel_reads_only_the_user_location(tmp_path, monkeypatch,
-                                                              put_resource, grid, approved):
-    """RSRP only at an approved user location, straight from the grid cell
-    there; no site-area RSRP; no grid under the point is a Coverage Issue."""
+def test_the_comment_reads_the_rsrp_at_the_user_location(tmp_path, monkeypatch,
+                                                         put_resource, grid):
+    """The Analysis Result's Comment: the RSRP of the grid cell at the approved
+    user location; no grid under the point is a Coverage issue."""
     monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
     AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
     import _complaints as C
@@ -260,19 +274,15 @@ def test_the_site_map_rsrp_panel_reads_only_the_user_location(tmp_path, monkeypa
     save_target(_target_bytes(), "Target 13-Sep.xlsx")
     put_resource("kpi", "R5 4G Monitoring Hourly KPI.csv", _kpi_csv().encode(), "4G KPI")
     put_resource("kmz", "R5_Sites.kmz", _kmz(), "Site KMZ")
-    if approved:
-        _relocate.approve("CC-1", *_at(120, 300))
+    _relocate.approve("CC-1", *_at(120, 300))
 
     real = C.load_workspace
 
     def with_coverage(*a, **k):
         ctx = real(*a, **k)
-        ctx.cov_kept = {"grid": object()} if grid != "none" else {}
         for r in ctx.re.values():
             r.rsrp = -98.7 if grid == "value" else None
             r.no_grid = r.coverage_issue = grid == "no-grid-here"
-            r.rsrp_note = ("grid cell of 50 m, 12 MRs" if grid == "value"
-                           else "no RSRP grid at the user location")
         return ctx
 
     monkeypatch.setattr(C, "load_workspace", with_coverage)
@@ -280,17 +290,96 @@ def test_the_site_map_rsrp_panel_reads_only_the_user_location(tmp_path, monkeypa
     at.session_state["sm_tid"] = "CC-1"
     at.run()
     assert not at.exception, at.exception
-    rsrp = next(b for b in _html(at) if "<span>Customer location</span>" in b)
-    assert "Site area RSRP" not in rsrp
-    for part in ("Customer location", "Sector / distance", 'class="ca-rsc"', 'class="ca-evs"'):
-        assert part in rsrp, part
-    if not approved:
-        assert "no approved user location" in rsrp and "-98.7" not in rsrp
-        return
-    assert "<span>Sector / distance</span><b>BAS0001-S2 · 300 m</b>" in rsrp
+    block = next(b for b in _html(at) if 'class="sm-cm-t"' in b)
+    comment = block.split('<pre class="sm-cm-t">', 1)[1].split("</pre>", 1)[0]
+    assert "customer’s serving site sector BAS0001-S2 with distance 300m" in comment
+    lat, lon = _at(120, 300)
+    assert f"User Location: {lat:.5f}, {lon:.5f}." in comment
     if grid == "value":
-        assert "-98.7 dBm" in rsrp and "user location" in rsrp
-    elif grid == "no-grid-here":
-        assert "Poor coverage · Coverage Issue" in rsrp
+        assert "and the RSRP was -99," in comment and "No Network Issue Detected" in comment
+    elif grid == "none":
+        assert "and the RSRP was N/A," in comment
     else:
-        assert "No coverage grid in Coverage Data" in rsrp
+        assert "Root cause: Coverage" in comment
+        assert "no RSRP coverage at the user location" in comment
+        assert "No Network Issue Detected" not in comment
+
+
+# --------------------------------------------------------------------------- #
+# one ticket, two pages: Sites map <-> Delay Tickets Analysis, no startup again
+# --------------------------------------------------------------------------- #
+def test_a_ticket_moves_between_the_sites_map_and_delay_tickets_analysis(
+        tmp_path, monkeypatch, put_resource):
+    monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
+    AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
+    from test_complaint_analysis import _target_bytes
+    from rfopt.complaints.target_store import save_target
+
+    save_target(_target_bytes(), "Target 13-Sep.xlsx")
+    put_resource("kpi", "R5 4G Monitoring Hourly KPI.csv", _kpi_csv().encode(), "4G KPI")
+    put_resource("kmz", "R5_Sites.kmz", _kmz(), "Site KMZ")
+    at = AppTest.from_file(str(APP / "Home.py"), default_timeout=300)
+    at.run()
+    assert at.session_state["_rf_prepared"]
+    at.switch_page("views/site_map.py").run()
+    assert not at.exception, at.exception
+    assert at.button(key="sm_open_ca").disabled                 # no ticket yet
+    at.text_input(key="sm_tid_in").set_value("IM1").run()
+    assert not at.button(key="sm_open_ca").disabled
+
+    # Sites map -> Delay Tickets Analysis: the same ticket, in Ticket Details
+    at.button(key="sm_open_ca").click().run()
+    assert not at.exception, at.exception
+    assert at.segmented_control(key="ca_mode").value == "Ticket Details"
+    assert at.session_state["ca_sel_tid"] == "CC-1"
+    assert any("Ticket Information" in b and "CC-1" in b for b in _html(at))
+    # the startup screen is not shown again on a page switch
+    assert not any("rf-startup" in b for b in _html(at))
+
+    # Delay Tickets Analysis -> Sites map: the same ticket opens there
+    at.button(key="ca_open_sm").click().run()
+    assert not at.exception, at.exception
+    # (AppTest sends back the field's last typed value, "IM1" — CC-1's own
+    # HPSM ID; a browser drops a widget's state when its page is left)
+    assert "sm_tid_next" not in at.session_state
+    caps = " ".join(c.value for c in at.caption)
+    assert "CC-1 · IM1 · BAS0001" in caps
+    assert "Analysis Result" in " ".join(_html(at))
+    assert not any("rf-startup" in b for b in _html(at))
+
+
+def test_the_neighbour_sector_kpi_panel_draws_each_neighbour_on_all_its_cells(
+        tmp_path, monkeypatch, put_resource):
+    """A second site beyond the user location, its sector facing the user: the
+    Neighbour Sector KPI panel picks it and draws its KPIs, cell by cell."""
+    monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
+    AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
+    import _relocate
+    from test_complaint_analysis import _target_bytes
+    from rfopt.complaints.target_store import save_target
+
+    far = _at(120, 700)                        # 400 m past the user, same bearing
+    csv = _kpi_csv().rstrip("\n").split("\n")
+    for h in pd.date_range("2026-09-13 10:00", "2026-09-13 23:00", freq="h"):
+        csv.append(f"{h:%Y-%m-%d %H:%M},Alpha_BAS0002,CELL_FDD,L_Alpha_BAS0002-1,1,"
+                   f"{90 if 15 <= h.hour <= 17 else 40},-118,100")
+    save_target(_target_bytes(), "Target 13-Sep.xlsx")
+    put_resource("kpi", "R5 4G Monitoring Hourly KPI.csv", ("\n".join(csv) + "\n").encode(),
+                 "4G KPI")
+    put_resource("kmz", "R5_Sites.kmz",
+                 _kmz([("BAS0002", far, [(1, 300), (2, 60), (3, 180)])]), "Site KMZ")
+    _relocate.approve("CC-1", *_at(120, 300))
+
+    at = AppTest.from_file(str(APP / "views/site_map.py"), default_timeout=300)
+    at.session_state["sm_tid"] = "CC-1"
+    at.run()
+    assert not at.exception, at.exception
+    sector = at.selectbox(key="sm_nb_sec")         # the neighbour sectors facing the user
+    assert sector.options == ["BAS0002-S1 · Technical Issue"]
+    kpi = at.selectbox(key="sm_nb_pick")           # its KPIs, the issue one first
+    assert kpi.options[0] == "PRB - 4G DL PRB · Critical"
+    assert len(at.get("plotly_chart")) == 2         # the serving sector's + the neighbour's
+    assert "BAS0002-S1 · Critical 90.0%" in " ".join(c.value for c in at.caption)
+    # the neighbour is not listed in the Analysis Result
+    result = next(b for b in _html(at) if "sm-cm-t" in b)
+    assert "BAS0002" not in result and "<span>Neighbour sectors</span>" not in result

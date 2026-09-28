@@ -55,10 +55,26 @@ It's a real Leaflet map (folium):
   the hit — **every tower stays drawn**, nothing is hidden.
 * **Distance lines** (sidebar toggle) – a complaint lat/lon search draws a
   line to each of the *N* nearest sites (slider, default 6) with its distance;
-  the best-pointed site's line is green. The nearest-sites table shows the
-  per-sector off-axis angles.
+  the best-pointed site's line is green.
 * **Export today's worklist KMZ** (shown once the Dashboard has run) – one
   P1–P4 pin per ticket site for Google Earth; locations come from the KMZ.
+
+### 🌙 Offline basemap (Sites map)
+
+The Sites map draws every basemap — **Dark, Streets, Satellite, Coverage and
+Night Satellite** — from local map packs, with **no Internet**. Fetch the packs
+once (this is the only step that uses the Internet):
+
+* in the app: **Map layers & Analysis → Offline map → Update offline map**
+  (tick *street-scale satellite imagery* for the large Sentinel-2 pack), or
+* from a terminal: `python scripts/update_offline_map.py` (`--imagery` for the
+  large imagery pack; `--help` for the options).
+
+The packs are saved to `~/.rfopt_cache/resources/basemap` (or the folder in
+`RFOPT_BASEMAP_DIR`). Copy that folder to another PC to use the same offline
+map there. Sources: OpenStreetMap (streets, places), NASA Black Marble (night
+lights), NASA Blue Marble (country-scale satellite), Sentinel-2 cloudless 2016
+by EOX (street-scale satellite, CC BY 4.0).
 
 ## Where things are saved
 

@@ -1,4 +1,41 @@
-# Project status / handoff  (updated 2026-09-27)
+# Project status / handoff  (updated 2026-09-28)
+
+## 2026-09-28 - Sites map: offline basemap, Night Satellite, drawer, 3 panels, Comment
+
+Site Map only (plus one button on Delay Tickets Analysis); no analysis logic
+changed.
+
+- **Offline basemap** (`rfopt/geo/offline_basemap.py`, `_map_assets.add_offline_basemap`,
+  `app/static/vendor/protomaps/`): every mode is drawn in the browser by
+  protomaps-leaflet / pmtiles from local PMTiles packs (`region` OSM vector,
+  `night` NASA Black Marble, `earth` NASA Blue Marble, optional `imagery`
+  Sentinel-2 cloudless 2016). The packs live in `<data>/basemap`
+  (RFOPT_BASEMAP_DIR) and are served by the local relay (`_tile_proxy`,
+  `/pm/<file>`, byte ranges, CORS + private-network preflight). No tile server
+  is asked while the map is used; the Internet is used only by the explicit
+  update (Map layers & Analysis -> Offline map, or
+  `scripts/update_offline_map.py`), which cuts the region out of the latest
+  Protomaps build (`extract_region`) and packs the NASA / EOX rasters. The
+  Esri / OSM tile layers and TileGuard are gone from the Sites map (other
+  pages unchanged). Not installed -> the map says which pack is missing.
+- **Night Satellite** (5th mode): Black Marble lights faded in as you zoom out,
+  under a night flavour of the vector map (amber glowing roads, lit built-up
+  areas, warm place names).
+- **Layout**: KPI cards over the map removed; map 800 px; the right panel folds
+  into a vertical drawer bar (client-side, `html.sm-drawer-closed`, remembered
+  per tab); under the map three equal panels: Serving Site KPI, Neighbour
+  Sector KPI (picker per neighbour sector, all of its cells), Analysis Result.
+  RSRP / Ticket Information panels, the neighbour row and the nearest-sites
+  table are removed; the Ticket ID card shows the open ticket in one line.
+- **Comment** (`rfopt/complaints/comment.py`) replaces Description in Analysis
+  Result: fixed prefixes, Root cause, issue description template, still-exists
+  line with `KpiCheck.issue_hours` (window + every hour after it) or "The site
+  issue solved and it is normal new", No Network Issue advice; Copy button.
+- **Navigation**: Sites map "Open in Delay Tickets Analysis" (Ticket Details of
+  the same ticket) and Ticket Details "Open in Site Map" (`sm_tid_next`
+  hand-off); no startup screen on page switches.
+- Tests: `tests/test_offline_basemap.py`, `tests/test_ticket_comment.py`,
+  `tests/test_site_map_ticket.py` (layout, Comment, neighbours, navigation).
 
 ## 2026-09-27 (cont.) - Analysis logic: the R5 team's rules (logic only, UI unchanged)
 
