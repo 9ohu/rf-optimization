@@ -6,8 +6,8 @@
  *   night.pmtiles    raster: NASA Black Marble night lights
  *   earth.pmtiles    raster: NASA Blue Marble (country scale, 500 m)
  *   imagery.pmtiles  raster: Sentinel-2 cloudless (regional scale, 10 m), optional
- *   detail.pmtiles   raster: Esri World Imagery (building scale, 0.5 m) around
- *                    the sites, optional
+ *   detail_<region>.pmtiles  raster: Esri World Imagery (building scale, 0.5 m)
+ *                    for a whole governorate (bas, nas, sam, ema), optional
  * No request ever leaves the machine. A pack that is not installed is left
  * out, and the map says which one is missing.
  *
@@ -144,6 +144,19 @@
       }, opts || {}));
     }
     var refPane = cfg.refPane || undefined;
+    // the building-scale imagery: one pack per region, each asked only for
+    // the tiles inside its own box
+    function details(opts) {
+      var keys = Object.keys(packs).filter(function (k) {
+        return k.indexOf("detail_") === 0 && has(k);
+      });
+      keys.forEach(function (k) {
+        var b = packs[k].bounds, o = {minZoom: packs[k].min_zoom};
+        if (b) { o.bounds = L.latLngBounds([b[1], b[0]], [b[3], b[2]]); }
+        raster(k, Object.assign(o, opts)).addTo(map);
+      });
+      return keys.length > 0;
+    }
 
     if (mode === "Dark" || mode === "Streets") {
       mapEl.style.background = mode === "Dark" ? DARK.background : "#e8e8e8";
@@ -161,9 +174,7 @@
                            className: "rf-night-sat"}).addTo(map);
         graded = true;
       }
-      if (has("detail")) {
-        raster("detail", {zIndex: 2, minZoom: packs.detail.min_zoom,
-                          className: "rf-night-sat"}).addTo(map);
+      if (details({zIndex: 2, className: "rf-night-sat"})) {
         graded = true;
       } else { missing.push("detail"); }
       var lit = has("night");
@@ -208,12 +219,10 @@
       }
       if (has("imagery")) { raster("imagery", {zIndex: 2}).addTo(map); day = true; }
       if (!has("imagery")) { missing.push("imagery"); }
-      // the building-scale imagery over the rest, around the sites
-      if (sat && has("detail")) {
-        raster("detail", {zIndex: 3, minZoom: packs.detail.min_zoom}).addTo(map);
-        day = true;
+      // the building-scale imagery over the rest, in the downloaded regions
+      if (sat) {
+        if (details({zIndex: 3})) { day = true; } else { missing.push("detail"); }
       }
-      if (sat && !has("detail")) { missing.push("detail"); }
       if (has("vector")) {
         var over = day ? {
           paintRules: onlyLines(P.paintRules(OVER_SAT)),

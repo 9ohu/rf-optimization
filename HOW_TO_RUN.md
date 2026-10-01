@@ -67,32 +67,45 @@ once (this is the only step that uses the Internet):
 
 * in the app: **Map layers & Analysis → Offline map → Update offline map**
   (tick *Regional satellite* for the Sentinel-2 pack and *Building-scale
-  satellite* for the sharp imagery around the sites), or
+  satellite for whole regions* for the sharp imagery), or
 * from a terminal: `python scripts/update_offline_map.py` (`--imagery`,
-  `--detail --arcgis-key KEY --areas BAS`; `--help` for the options).
+  `--detail BAS --arcgis-key KEY`; `--help` for the options).
 
 **Building-scale satellite (sharp buildings, rooftops and streets).** The
-Satellite and Night Satellite maps need the *building-scale* pack: Esri World
-Imagery (Maxar aerial / satellite photography, about 0.3–0.6 m in Iraq's
-cities), stored up to zoom 18 (0.5 m pixels) around every site. It is
-licensed imagery, fetched with **your own ArcGIS API key**:
+Satellite and Night Satellite maps need the *building-scale* packs: Esri
+World Imagery (Maxar aerial / satellite photography, about 0.3–0.6 m in
+Iraq's cities), stored up to zoom 18 (0.5 m pixels) for **whole
+governorates** — every tile inside the region's boundary, with or without
+sites, so the map can be moved and zoomed anywhere in it offline:
+
+| Region | Governorate | Zoom 14–18, about |
+|---|---|---|
+| BAS · Basrah | Al-Basrah | 1.4 million tiles · 25 GB |
+| NAS · Nasiriyah | Dhi Qar | 1.1 million tiles · 20 GB |
+| SAM · Samawah | Al-Muthanna | 4.1 million tiles · 75 GB |
+| EMA · Amarah | Maysan | 1.4 million tiles · 25 GB |
+
+Each zoom in takes about 4× the tiles (zoom 19 ≈ 4× the table; zoom 17 ≈ ¼).
+It is licensed imagery, fetched with **your own ArcGIS API key**:
 
 1. Get an ArcGIS account — an ArcGIS Online organisational account, or an
    *ArcGIS Location Platform* developer account (free tier,
    https://location.arcgis.com) — and an **API key with the basemaps
-   privilege**.
+   privilege**. Every tile is one request on that account: check its
+   monthly allowance before downloading a whole region.
 2. Sites map → Map layers & Analysis → **Offline map** → tick
-   *Building-scale satellite around the sites*, paste the key (it is kept on
-   this PC only, never in the map packs).
-3. Pick the **areas** (BAS, NAS, EMA, SAM), the sharp radius around each site
-   and the sharpest zoom; the box shows the tile count and size before you
-   start (roughly 4–5 GB for about 2,000 sites at the defaults). Press
-   **Update offline map**.
-4. Large networks: one area at a time — the pack keeps what it already has
-   and adds each area; an update that was cut short carries on where it
-   stopped when you press Update again.
+   *Building-scale satellite for whole regions*, paste the key (it is kept
+   on this PC only, never in the map packs).
+3. Pick the **Governorate / Region boundary** (BAS, NAS, SAM, EMA) and the
+   sharpest zoom; the box shows the tile count and size of each region
+   before you start. Press **Update offline map**.
+4. Each region has its own pack (`detail_bas.pmtiles`, …). It is usable
+   while it downloads (the map draws what has arrived after each
+   checkpoint), and an update that stops — the app closed, the network gone
+   — carries on where it stopped when you press Update again (a started
+   region is picked for you).
 
-Without that pack the satellite maps fall back to Sentinel-2 (10 m — fields
+Without those packs the satellite maps fall back to Sentinel-2 (10 m — fields
 and town outlines, no single buildings), the sharpest openly licensed imagery.
 
 The packs are saved to `~/.rfopt_cache/resources/basemap` (or the folder in
@@ -101,7 +114,7 @@ map there. Sources: OpenStreetMap (streets, places), NASA Black Marble (night
 lights), NASA Blue Marble (country-scale satellite), Sentinel-2 cloudless 2016
 by EOX (regional satellite, CC BY 4.0), Esri World Imagery (building-scale
 satellite: Esri, Maxar, Earthstar Geographics; used under your ArcGIS
-account's terms).
+account's terms); governorate boundaries from geoBoundaries (CC0).
 
 ## Where things are saved
 

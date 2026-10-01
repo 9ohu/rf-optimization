@@ -29,6 +29,9 @@ rfopt = "rfopt.cli:main"
 [tool.setuptools.packages.find]
 include = ["rfopt*"]
 
+[tool.setuptools.package-data]
+"rfopt.geo" = ["*.geojson"]          # the governorate boundaries (offline map regions)
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]

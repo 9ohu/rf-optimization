@@ -269,6 +269,7 @@ def offline_basemap_config(mode: str, *, ref_pane: str | None = None,
         packs[k] = {"file": p.file, "attribution": p.attribution,
                     "native_max": head["max_zoom"] if head else p.native_max,
                     "min_zoom": head["min_zoom"] if head else 0,
+                    "bounds": list(head["bounds"]) if head else None,
                     "installed": head is not None}
     return {"mode": mode, "base": base, "lang": lang, "refPane": ref_pane, "packs": packs}
 

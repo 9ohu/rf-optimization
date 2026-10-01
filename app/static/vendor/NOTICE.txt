@@ -29,3 +29,8 @@ Offline map imagery (not shipped with the app; fetched by the user's
                     Esri World Imagery - Imagery (c) Esri, Maxar, Earthstar
                     Geographics; fetched with the user's own ArcGIS API key
                     and used under that account's Esri terms of use
+
+Governorate boundaries (rfopt/geo/r5_governorates.geojson): the download area
+of the building-scale imagery (Basrah, Dhi Qar, Al-Muthanna, Maysan)
+                    geoBoundaries gbOpen IRQ ADM1, 2022 edition
+                    https://www.geoboundaries.org - CC0 1.0 (public domain)

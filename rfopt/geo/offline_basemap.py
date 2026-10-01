@@ -23,23 +23,30 @@ The packs:
   (CC BY 4.0): day satellite at regional scale, up to zoom 13 (16 m pixels
   at Basra; Sentinel-2 itself sees 10 m) — fields, rivers, the outline of a
   town, never single buildings. It is the sharpest openly licensed imagery.
-* ``detail.pmtiles`` (optional, large) — Esri World Imagery (Maxar Vivid,
-  about 0.3-0.6 m in Iraq's cities): day satellite at building scale, zooms
-  14-18 (0.5 m pixels at zoom 18), around every site (`detail_rings`). It is
-  fetched through ArcGIS with the user's own API key (`arcgis_key`), from the
-  World Imagery (for Export) service — Esri's service for taking the imagery
-  offline. The Satellite and Night Satellite maps draw it over the others.
+* ``detail_bas.pmtiles``, ``detail_nas.pmtiles``, ``detail_sam.pmtiles``,
+  ``detail_ema.pmtiles`` (optional, very large) — Esri World Imagery (Maxar
+  Vivid, about 0.3-0.6 m in Iraq's cities): day satellite at building
+  scale, zooms 14-18 (0.5 m pixels at zoom 18), for the whole of a
+  governorate — Basrah, Nasiriyah (Dhi Qar), Samawah (Al-Muthanna), Amarah
+  (Maysan) — every tile that touches its boundary (`regions`,
+  `region_rows`), wherever the sites are. One pack per region, grown in
+  place by `pack_writer.GrowingPack`. It is fetched through ArcGIS with the
+  user's own API key (`arcgis_key`), from the World Imagery (for Export)
+  service — Esri's service for taking the imagery offline. The Satellite and
+  Night Satellite maps draw it over the others.
 
 The Internet is used only by `update()` — the explicit "Update offline map"
 action (Sites map, Map layers & Analysis → Offline map, or
 ``python scripts/update_offline_map.py``). It fetches the packs for Iraq at
-country zooms, for the sites' region at street zooms and around each site at
-building zooms. A pack folder copied from another PC works the same.
+country zooms, for the sites' region at street zooms and for the chosen
+governorates at building zooms. A pack folder copied from another PC works
+the same.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import json
 import math
 import os
@@ -53,7 +60,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,10 +88,24 @@ PACKS: dict[str, Pack] = {
     "imagery": Pack("imagery", "imagery.pmtiles", "raster",
                     "Day satellite, regional scale (Sentinel-2 cloudless 2016, 10 m)",
                     "Sentinel-2 cloudless 2016 by EOX (modified Copernicus data)", 13),
-    "detail": Pack("detail", "detail.pmtiles", "raster",
-                   "Day satellite, building scale (Esri World Imagery, 0.5 m)",
-                   "Imagery © Esri, Maxar, Earthstar Geographics", 18),
 }
+
+# the building-scale imagery: one pack per region (governorate)
+REGION_NAMES = {"BAS": "Basrah", "NAS": "Nasiriyah", "SAM": "Samawah", "EMA": "Amarah"}
+DETAIL_ATTRIBUTION = "Imagery © Esri, Maxar, Earthstar Geographics"
+
+
+def detail_key(code: str) -> str:
+    """BAS -> "detail_bas": the building-scale pack of a region."""
+    return "detail_" + code.lower()
+
+
+for _code, _name in REGION_NAMES.items():
+    PACKS[detail_key(_code)] = Pack(
+        detail_key(_code), detail_key(_code) + ".pmtiles", "raster",
+        f"Day satellite, building scale — {_name} (Esri World Imagery, 0.5 m)",
+        DETAIL_ATTRIBUTION, 18)
+DETAIL_KEYS = tuple(detail_key(c) for c in REGION_NAMES)
 
 # lon / lat boxes: the whole country at country zooms, the sites' region at
 # street zooms (`region_bbox` narrows it to where the sites are)
@@ -120,12 +140,11 @@ ESRI_DETAIL = [
     "static-basemap-tiles-service/v1/arcgis/imagery/static/tile/{z}/{y}/{x}?token={key}",
 ]
 ESRI_DETAIL_ID = "Esri World Imagery"
-# the building-scale pack around each site: the radius at zoom 18 (0.5 m
-# pixels), doubled at each zoom out (`detail_rings`)
+# the building-scale packs: zooms 14 (8 m pixels) to 18 (0.5 m) by default
 DETAIL_MIN, DETAIL_MAX = 14, 18
-DETAIL_RADIUS_KM = 0.5
-DETAIL_RADIUS_CAP_KM = 12.0          # past this the regional imagery does
 DETAIL_TILE_KB = 18                  # an Esri JPEG tile, on average (estimates)
+# the governorates' boundaries: geoBoundaries gbOpen IRQ ADM1 (CC0)
+BOUNDARIES = Path(__file__).with_name("r5_governorates.geojson")
 _UA = "RF-Optimizer offline map update"
 _SECRET = re.compile(r"(?i)([?&](?:token|key|api_?key|access_token)=)[^&#]+")
 
@@ -241,59 +260,131 @@ def region_bbox(lats, lons, margin_km: float = 15.0):
     return (min(lo) - dlon, min(la) - dlat, max(lo) + dlon, max(la) + dlat)
 
 
-def detail_rings(max_zoom: int = DETAIL_MAX, radius_km: float = DETAIL_RADIUS_KM,
-                 min_zoom: int = DETAIL_MIN) -> list[tuple[int, float]]:
-    """(zoom, radius km) of the building-scale pack: `radius_km` around a site
-    at zoom 18, doubled at each zoom out and halved at each zoom in — the
-    screen around a site at every zoom, for about the same tiles per zoom."""
-    return [(z, min(radius_km * 2.0 ** (18 - z), DETAIL_RADIUS_CAP_KM))
-            for z in range(int(min_zoom), int(max_zoom) + 1)]
+# --------------------------------------------------------------------------- #
+# the regions: governorate boundaries, and the tiles inside them
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Region:
+    code: str              # BAS
+    name: str              # Basrah
+    governorate: str       # Al-Basrah
+    rings: tuple           # ((lon, lat), ...) per ring: the outline, then any holes
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        lo = [p[0] for p in self.rings[0]]
+        la = [p[1] for p in self.rings[0]]
+        return (min(lo), min(la), max(lo), max(la))
 
 
-def _tile_lat(y: int, n: int) -> float:
-    return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+@functools.lru_cache(maxsize=1)
+def regions() -> dict[str, Region]:
+    """BAS / NAS / SAM / EMA -> the governorate's boundary."""
+    data = json.loads(BOUNDARIES.read_text(encoding="utf-8"))
+    out = {}
+    for f in data["features"]:
+        p, g = f["properties"], f["geometry"]
+        polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
+        rings = tuple(tuple((float(x), float(y)) for x, y in ring)
+                      for poly in polys for ring in poly)
+        out[p["code"]] = Region(p["code"], p["name"], p["governorate"], rings)
+    return {c: out[c] for c in REGION_NAMES if c in out}
 
 
-def site_tiles(points, rings) -> list[tuple[int, int, int]]:
-    """(z, x, y) of every tile that comes within a ring's radius of a site."""
-    seen: set = set()
-    for z, r_km in rings:
-        n = 2 ** z
-        for lat, lon in points:
-            kx = 111.32 * max(math.cos(math.radians(lat)), 0.01)
-            dlat, dlon = r_km / 111.32, r_km / kx
-            x0, y0 = lonlat_to_tile(lon - dlon, lat + dlat, z)
-            x1, y1 = lonlat_to_tile(lon + dlon, lat - dlat, z)
+def _frac_tile(lon: float, lat: float, n: int) -> tuple[float, float]:
+    lat = max(min(lat, 85.0511), -85.0511)
+    return ((lon + 180.0) / 360.0 * n,
+            (1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n)
+
+
+def _walk(ax: float, ay: float, bx: float, by: float):
+    """Every tile a straight edge passes through (in tile units)."""
+    x, y = math.floor(ax), math.floor(ay)
+    xe, ye = math.floor(bx), math.floor(by)
+    dx, dy = bx - ax, by - ay
+    sx, sy = (1 if dx > 0 else -1), (1 if dy > 0 else -1)
+    tdx = abs(1.0 / dx) if dx else math.inf
+    tdy = abs(1.0 / dy) if dy else math.inf
+    tmx = ((x + (sx > 0)) - ax) / dx if dx else math.inf
+    tmy = ((y + (sy > 0)) - ay) / dy if dy else math.inf
+    yield x, y
+    for _ in range(abs(xe - x) + abs(ye - y)):
+        if tmx < tmy:
+            tmx += tdx
+            x += sx
+        else:
+            tmy += tdy
+            y += sy
+        yield x, y
+
+
+def polygon_rows(rings, z: int) -> tuple[tuple[int, int, int], ...]:
+    """(y, x0, x1) runs of every zoom-z tile that touches the polygon — the
+    tiles whose centre is inside it, and those its outline crosses — and no
+    other."""
+    n = 2 ** z
+    edges = []
+    for ring in rings:
+        pts = [_frac_tile(lon, lat, n) for lon, lat in ring]
+        edges += [(a, b) for a, b in zip(pts, pts[1:] + pts[:1]) if a != b]
+    if not edges:
+        return ()
+    ys = [p[1] for e in edges for p in e]
+    y0, y1 = max(int(math.floor(min(ys))), 0), min(int(math.floor(max(ys))), n - 1)
+    cells: dict[int, list] = {}
+    for y in range(y0, y1 + 1):                          # inside: by the tile centres
+        cy = y + 0.5
+        xs = sorted(ax + (cy - ay) * (bx - ax) / (by - ay)
+                    for (ax, ay), (bx, by) in edges if (ay <= cy) != (by <= cy))
+        for xa, xb in zip(xs[0::2], xs[1::2]):
+            lo, hi = math.ceil(xa - 0.5), math.floor(xb - 0.5)
+            if lo <= hi:
+                cells.setdefault(y, []).append((lo, hi))
+    for (ax, ay), (bx, by) in edges:                     # the outline
+        for x, y in _walk(ax, ay, bx, by):
+            if 0 <= x < n and 0 <= y < n:
+                cells.setdefault(y, []).append((x, x))
+    out = []
+    for y in sorted(cells):
+        runs = sorted(cells[y])
+        lo, hi = runs[0]
+        for a, b in runs[1:]:
+            if a <= hi + 1:
+                hi = max(hi, b)
+            else:
+                out.append((y, max(lo, 0), min(hi, n - 1)))
+                lo, hi = a, b
+        out.append((y, max(lo, 0), min(hi, n - 1)))
+    return tuple(out)
+
+
+@functools.lru_cache(maxsize=64)
+def region_rows(code: str, z: int) -> tuple[tuple[int, int, int], ...]:
+    """(y, x0, x1) runs of the zoom-z tiles of a region (`polygon_rows`)."""
+    return polygon_rows(regions()[code].rings, z)
+
+
+def region_count(code: str, z: int) -> int:
+    return sum(x1 - x0 + 1 for _, x0, x1 in region_rows(code, z))
+
+
+def region_tiles(code: str, zmin: int, zmax: int):
+    """(z, x, y) of every tile of the region, zoom by zoom (lazily: a region
+    holds millions)."""
+    for z in range(zmin, zmax + 1):
+        for y, x0, x1 in region_rows(code, z):
             for x in range(x0, x1 + 1):
-                lon0, lon1 = x / n * 360.0 - 180.0, (x + 1) / n * 360.0 - 180.0
-                dx = (min(max(lon, lon0), lon1) - lon) * kx
-                for y in range(y0, y1 + 1):
-                    if (z, x, y) in seen:
-                        continue
-                    lat1, lat0 = _tile_lat(y, n), _tile_lat(y + 1, n)
-                    dy = (min(max(lat, lat0), lat1) - lat) * 111.32
-                    if dx * dx + dy * dy <= r_km * r_km:   # the tile's nearest point
-                        seen.add((z, x, y))
-    return sorted(seen)
+                yield z, x, y
 
 
-def rings_bbox(points, rings):
-    """The lon / lat box the rings around the sites cover."""
-    r = max(rk for _, rk in rings)
-    la = [p[0] for p in points]
-    lo = [p[1] for p in points]
-    dlat = r / 111.32
-    dlon = r / (111.32 * math.cos(math.radians(sum(la) / len(la))))
-    return (min(lo) - dlon, min(la) - dlat, max(lo) + dlon, max(la) + dlat)
-
-
-def detail_estimate(points, *, max_zoom: int = DETAIL_MAX,
-                    radius_km: float = DETAIL_RADIUS_KM) -> tuple[int, float]:
-    """(tiles, MB) the building-scale pack would hold around these sites."""
-    if not points:
-        return 0, 0.0
-    n = len(site_tiles(points, detail_rings(max_zoom, radius_km)))
-    return n, n * DETAIL_TILE_KB / 1000.0
+def region_estimate(codes, *, max_zoom: int = DETAIL_MAX,
+                    min_zoom: int = DETAIL_MIN) -> dict[str, tuple[int, float]]:
+    """code -> (tiles, MB) of its building-scale pack, zooms min..max."""
+    out = {}
+    for c in codes:
+        n = sum(region_count(c, z) for z in range(min_zoom, max_zoom + 1))
+        out[c] = (n, n * DETAIL_TILE_KB / 1000.0)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -435,29 +526,6 @@ def _probe(templates, z=5, x=20, y=13, *, hint: str = "") -> str:
                       + ", ".join(sorted({t.split('/')[2] for t in templates})) + hint)
 
 
-def pack_tiles(path) -> tuple[dict[int, tuple[int, int]], dict, str]:
-    """Every tile of a local raster pack: tile id -> (offset, length) in the
-    file, with the pack's metadata and tile type."""
-    from pmtiles.reader import MmapSource, Reader
-    from pmtiles.tile import deserialize_directory, deserialize_header
-
-    get = file_reader(path)
-    head = deserialize_header(get(0, 127))
-    out: dict[int, tuple[int, int]] = {}
-    todo = [(head["root_offset"], head["root_length"])]
-    while todo:
-        off, n = todo.pop()
-        for e in deserialize_directory(get(off, n)):
-            if e.run_length == 0:
-                todo.append((head["leaf_directory_offset"] + e.offset, e.length))
-            else:
-                for i in range(e.run_length):
-                    out[e.tile_id + i] = (head["tile_data_offset"] + e.offset, e.length)
-    with open(path, "rb") as f:
-        meta = Reader(MmapSource(f)).metadata()
-    return out, meta, (read_header(path) or {}).get("tile_type", "unknown")
-
-
 def _swap(part: Path, out: Path, tries: int = 20) -> None:
     """Put the new pack in place. On Windows that fails while the map's relay
     is reading the old one: wait for it rather than lose a finished download."""
@@ -472,159 +540,56 @@ def _swap(part: Path, out: Path, tries: int = 20) -> None:
 
 
 def build_raster_pack(templates, bands, out: Path, *, attribution: str, name: str,
-                      progress=None, workers: int = 6, todo=None, source_id: str = "",
-                      reuse: bool = False, keep_going: bool = False,
-                      drop_repeats: bool = False, stash: Path | None = None,
-                      report: dict | None = None) -> int:
-    """Fetch the tiles of `bands` (or the (z, x, y) of `todo`) and write them as
-    one raster PMTiles archive. Returns the number of tiles written.
-
-    `reuse`: the pack at `out` grows instead of being replaced — every tile it
-    already holds from the same source is kept and only the others are
-    fetched, so another area adds to it. `stash`: a folder the fetched tiles
-    wait in until the pack is written, kept if the update stops (the app
-    closed, the network gone) and taken up by the next one, so a long download
-    carries on where it stopped. `keep_going`: a tile that keeps failing is
-    left out (counted in `report`) instead of failing the pack; FAIL_STREAK
-    failures in a row stop the fetch and keep what came. `drop_repeats`: one
-    picture repeated on many street-zoom tiles (a "no imagery here"
-    placeholder) is left out."""
-    from pmtiles.tile import Compression, TileType, tileid_to_zxy, zxy_to_tileid
+                      progress=None, workers: int = 6) -> int:
+    """Fetch the tiles of `bands` and write them as one raster PMTiles archive.
+    Returns the number of tiles written."""
+    from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
     tpl = templates if isinstance(templates, str) else _probe(templates)
-    todo = plan(bands) if todo is None else list(todo)
-    source_id = source_id or redact(tpl)
-    lon0, lat0, lon1, lat1 = _union(bands)
-
-    # what the pack on disk already holds from this source: kept, read from it
-    # while the new file is written (never copied twice)
-    held: dict[int, tuple[int, int]] = {}
+    todo = plan(bands)
+    tmp = Path(tempfile.mkdtemp(prefix="rf_pack_", dir=out.parent))
+    done = [0]
     kinds: set = set()
-    if reuse and out.is_file() and read_header(out):
-        try:
-            index, meta, kind = pack_tiles(out)
-            if meta.get("source_id") == source_id and kind in ("png", "jpeg"):
-                held, kinds = index, {kind}
-                b = read_header(out)["bounds"]
-                lon0, lat0 = min(lon0, b[0]), min(lat0, b[1])
-                lon1, lat1 = max(lon1, b[2]), max(lat1, b[3])
-        except Exception:
-            held = {}
-    total = len(todo)
-    todo = [t for t in todo if zxy_to_tileid(*t) not in held]
-
-    fetched: list[int] = []                 # tile ids on disk (list.append is atomic)
-    looks: dict[int, int] = {}              # tile id -> hash of its bytes
-    failed: list[str] = []
-    streak = [0]
-    stop = threading.Event()
-
-    def keep(tid: int, data: bytes) -> None:
-        fetched.append(tid)
-        looks[tid] = hash(data)
-        kinds.add("png" if data[:4] == b"\x89PNG" else "jpeg")
-
-    # the tiles a stopped update already fetched (same source only)
-    if stash is not None:
-        stash.mkdir(parents=True, exist_ok=True)
-        mark = stash / "source.txt"
-        if not mark.is_file() or mark.read_text(encoding="utf-8") != source_id:
-            shutil.rmtree(stash, ignore_errors=True)
-            stash.mkdir(parents=True, exist_ok=True)
-            mark.write_text(source_id, encoding="utf-8")
-        rest = []
-        for t in todo:
-            tid = zxy_to_tileid(*t)
-            if (stash / str(tid)).is_file():
-                keep(tid, (stash / str(tid)).read_bytes())
-            else:
-                rest.append(t)
-        todo, tmp = rest, stash
-    else:
-        tmp = Path(tempfile.mkdtemp(prefix="rf_pack_", dir=out.parent))
-    done = [total - len(todo)]
+    written: list[int] = []                 # tile ids on disk (list.append is atomic)
 
     def one(zxy):
-        if stop.is_set():
-            return
         z, x, y = zxy
-        try:
-            data = http_get(tile_url(tpl, z, x, y))
-            streak[0] = 0
-        except ConnectionError as e:
-            if not keep_going:
-                raise
-            failed.append(str(e))
-            streak[0] += 1
-            if streak[0] >= FAIL_STREAK:
-                stop.set()
-            data = None
+        data = http_get(tile_url(tpl, z, x, y))
         if _is_image(data):
             tid = zxy_to_tileid(z, x, y)
-            part = tmp / f"{tid}.part"
-            part.write_bytes(data)
-            part.replace(tmp / str(tid))           # never half a tile in the stash
-            keep(tid, data)
+            (tmp / str(tid)).write_bytes(data)
+            written.append(tid)
+            kinds.add("png" if data[:4] == b"\x89PNG" else "jpeg")
         done[0] += 1
         if progress:
-            progress(name, done[0], total)
+            progress(name, done[0], len(todo))
 
-    ok = False
     try:
-        if progress:
-            progress(name, done[0], total)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             list(ex.map(one, todo))
-        new = set(fetched)
-        dropped = 0
-        if drop_repeats and new:
-            street = Counter(looks[t] for t in new if tileid_to_zxy(t)[0] >= 15)
-            same = {h for h, c in street.items() if c >= REPEAT_LIMIT}
-            bad = {t for t in new if looks[t] in same and tileid_to_zxy(t)[0] >= 15}
-            dropped, new = len(bad), new - bad
-        if report is not None:
-            report.update(kept=len(held), fetched=len(new), failed=total - done[0] + len(failed),
-                          dropped=dropped, error=failed[0] if failed else "")
-        ids = sorted(new | set(held))
+        ids = sorted(written)
         if not ids:
-            raise UpdateError(f"{name}: no tile came back"
-                              + (f" ({failed[0]})" if failed else ""))
+            raise UpdateError(f"{name}: no tile came back")
         if len(kinds) > 1:
             raise UpdateError(f"{name}: the source mixed PNG and JPEG tiles")
         part = out.with_suffix(".part")
-        old = open(out, "rb") if held else None
-        try:
-            with open(part, "wb") as f:
-                w = Writer(f)
-                for tid in ids:
-                    if tid in new:
-                        src = tmp / str(tid)
-                        w.write_tile(tid, src.read_bytes())
-                        src.unlink()               # the disk holds each tile once
-                    else:
-                        off, n = held[tid]
-                        old.seek(off)
-                        w.write_tile(tid, old.read(n))
-                w.finalize({"tile_type": TileType.PNG if kinds == {"png"} else TileType.JPEG,
-                            "tile_compression": Compression.NONE,
-                            "min_lon_e7": int(lon0 * 1e7), "min_lat_e7": int(lat0 * 1e7),
-                            "max_lon_e7": int(lon1 * 1e7), "max_lat_e7": int(lat1 * 1e7),
-                            "center_zoom": max(min(7, tileid_to_zxy(ids[-1])[0]),
-                                               tileid_to_zxy(ids[0])[0]),
-                            "center_lon_e7": int((lon0 + lon1) / 2 * 1e7),
-                            "center_lat_e7": int((lat0 + lat1) / 2 * 1e7)},
-                           {"name": name, "attribution": attribution, "source": redact(tpl),
-                            "source_id": source_id})
-        finally:
-            if old is not None:
-                old.close()
+        with open(part, "wb") as f:
+            w = Writer(f)
+            for tid in ids:
+                w.write_tile(tid, (tmp / str(tid)).read_bytes())
+            lon0, lat0, lon1, lat1 = _union(bands)
+            w.finalize({"tile_type": TileType.PNG if kinds == {"png"} else TileType.JPEG,
+                        "tile_compression": Compression.NONE,
+                        "min_lon_e7": int(lon0 * 1e7), "min_lat_e7": int(lat0 * 1e7),
+                        "max_lon_e7": int(lon1 * 1e7), "max_lat_e7": int(lat1 * 1e7),
+                        "center_zoom": 7, "center_lon_e7": int((lon0 + lon1) / 2 * 1e7),
+                        "center_lat_e7": int((lat0 + lat1) / 2 * 1e7)},
+                       {"name": name, "attribution": attribution, "source": redact(tpl)})
         _swap(part, out)
-        ok = True
         return len(ids)
     finally:
-        if ok or stash is None:                    # a stopped update keeps its stash
-            shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _union(bands):
@@ -778,8 +743,8 @@ def file_reader(path):
 # --------------------------------------------------------------------------- #
 def bands_for(key: str, region=R5, *, imagery_max: int = 13, vector_max: int = 15):
     """(min zoom, max zoom, bbox) bands of each pack: the country at country
-    zooms, the sites' region at street zooms. (The building-scale pack is
-    planned around each site instead: `detail_rings`.)"""
+    zooms, the sites' region at street zooms. (The building-scale packs cover
+    a governorate's boundary instead: `region_rows`.)"""
     if key == "vector":
         return [(0, 9, IRAQ), (10, vector_max, region)]
     if key in ("night", "earth"):
@@ -789,48 +754,114 @@ def bands_for(key: str, region=R5, *, imagery_max: int = 13, vector_max: int = 1
     raise KeyError(key)
 
 
-def update_detail(out: Path, sites, *, max_zoom: int = DETAIL_MAX,
-                  radius_km: float = DETAIL_RADIUS_KM, key: str | None = None,
-                  url: str | None = None, fresh: bool = False, progress=None,
-                  log=print) -> tuple[int, dict]:
-    """Fetch the building-scale imagery around `sites` ((lat, lon) pairs) into
-    the pack at `out`, adding to what it already holds (`fresh`: start over).
-    Returns (tiles in the pack, report)."""
-    pack = PACKS["detail"]
-    sites = list(sites)
-    if not sites:
-        raise UpdateError("no site has a position — the building-scale imagery is "
-                          "fetched around the sites")
+def update_region(code: str, *, max_zoom: int = DETAIL_MAX, key: str | None = None,
+                  url: str | None = None, fresh: bool = False, progress=None, log=print,
+                  workers: int = 8, batch: int = 2048) -> tuple[int, dict]:
+    """Fetch the building-scale imagery of a whole region (governorate): every
+    tile of zooms DETAIL_MIN..max_zoom that touches its boundary, into its own
+    pack. The pack grows in place (`GrowingPack`): what it already holds from
+    the same source is kept, the map can draw it while the rest comes down,
+    and an update that stops carries on from its last checkpoint (`fresh`:
+    start over). Returns (tiles in the pack, report)."""
+    from pmtiles.tile import zxy_to_tileid
+
+    from rfopt.geo.pack_writer import GrowingPack
+
+    reg = regions()[code]
+    pack = PACKS[detail_key(code)]
+    out = folder() / pack.file
     templates, source_id = detail_sources(key, url)
-    rings = detail_rings(max_zoom, radius_km)
-    todo = site_tiles(sites, rings)
-    z0 = rings[0][0]
-    x, y = lonlat_to_tile(sites[0][1], sites[0][0], z0)
-    tpl = _probe(templates, z0, x, y, hint="" if source_id != ESRI_DETAIL_ID else
+    lon0, lat0, lon1, lat1 = reg.bbox
+    zmin = DETAIL_MIN
+    rows = region_rows(code, zmin)
+    mid = rows[len(rows) // 2]
+    tpl = _probe(templates, zmin, (mid[1] + mid[2]) // 2, mid[0],
+                 hint="" if source_id != ESRI_DETAIL_ID else
                  " — check the ArcGIS API key (it needs the basemaps privilege)")
-    log(f"{pack.title}: {len(todo):,} tiles around {len(sites):,} sites, zoom "
-        f"{z0}-{rings[-1][0]}, from {redact(tpl).split('/')[2]}")
-    report: dict = {}
-    stash = out.with_name(out.stem + ".download")
+    meta = {"name": pack.title, "attribution": pack.attribution, "source": redact(tpl),
+            "source_id": source_id, "region": code, "governorate": reg.governorate}
     if fresh:
-        shutil.rmtree(stash, ignore_errors=True)
-    n = build_raster_pack(tpl, [(z0, rings[-1][0], rings_bbox(sites, rings))], out,
-                          attribution=pack.attribution, name=pack.title,
-                          progress=progress, workers=8, todo=todo, source_id=source_id,
-                          reuse=not fresh, keep_going=True, drop_repeats=True,
-                          stash=stash, report=report)
-    return n, report
+        out.unlink(missing_ok=True)
+    gp = GrowingPack(out, metadata=meta)
+    if gp.count and gp.metadata.get("source_id") != source_id:
+        log(f"{pack.title}: another imagery source — starting over")
+        gp.close()
+        out.unlink(missing_ok=True)
+        gp = GrowingPack(out, metadata=meta)
+    gp.metadata.update(meta)
+    total = sum(region_count(code, z) for z in range(zmin, max_zoom + 1))
+    log(f"{pack.title}: {total:,} tiles in the {reg.governorate} boundary, zoom "
+        f"{zmin}-{max_zoom}; {gp.loaded:,} already in the pack; from "
+        f"{redact(tpl).split('/')[2]}")
+    failed: list[str] = []
+    streak = [0]
+    stop = threading.Event()
+    done = [0]
+    fetched = [0]
+
+    def one(zxy):
+        if stop.is_set():
+            return
+        z, x, y = zxy
+        try:
+            data = http_get(tile_url(tpl, z, x, y))
+            streak[0] = 0
+        except ConnectionError as e:
+            failed.append(str(e))
+            streak[0] += 1
+            if streak[0] >= FAIL_STREAK:
+                stop.set()
+            data = None
+        if data and gp.add(zxy_to_tileid(z, x, y), data):
+            fetched[0] += 1
+        done[0] += 1
+
+    def checkpoint():
+        return gp.checkpoint(bounds=(lon0, lat0, lon1, lat1), drop_repeats_from=15,
+                             repeat_limit=REPEAT_LIMIT)
+
+    last_cp, last_t = 0, time.monotonic()
+    state = {"tiles": gp.loaded, "dropped": 0}
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            it = region_tiles(code, zmin, max_zoom)
+            while not stop.is_set():
+                chunk = [t for _, t in zip(range(batch), it)]
+                if not chunk:
+                    break
+                held = gp.holds([zxy_to_tileid(*t) for t in chunk])
+                done[0] += int(held.sum())
+                list(ex.map(one, [t for t, h in zip(chunk, held) if not h]))
+                if progress:
+                    progress(pack.title, done[0], total)
+                # the map draws what came, every so often (more tiles, fewer stops)
+                new = fetched[0] - last_cp
+                if new and (new >= max(50_000, gp.count // 5)
+                            or (new >= 1_000 and time.monotonic() - last_t > 1200)):
+                    state = checkpoint()
+                    last_cp, last_t = fetched[0], time.monotonic()
+        if fetched[0] > last_cp or not state["tiles"]:
+            state = checkpoint()
+    finally:
+        gp.close()
+    missing = total - done[0] + len(failed)
+    report = {"kept": gp.loaded, "fetched": fetched[0], "failed": missing,
+              "dropped": state["dropped"], "error": failed[0] if failed else ""}
+    if not state["tiles"]:
+        out.unlink(missing_ok=True)
+        raise UpdateError(f"{pack.title}: no tile came back"
+                          + (f" ({failed[0]})" if failed else ""))
+    return state["tiles"], report
 
 
 def update(keys=("vector", "night", "earth"), *, region=R5, vector_source: str | None = None,
-           imagery_max: int = 13, vector_max: int = 15, sites=(),
-           detail_max: int = DETAIL_MAX, detail_radius_km: float = DETAIL_RADIUS_KM,
+           imagery_max: int = 13, vector_max: int = 15, detail_max: int = DETAIL_MAX,
            arcgis_key: str | None = None, detail_url: str | None = None,
            detail_fresh: bool = False, progress=None, log=print) -> dict:
     """Fetch the packs named in `keys` (the explicit, manual map-data update —
     the only step that uses the Internet). A pack is replaced only once its
-    new file is complete; a failed pack keeps the old one. `sites`: (lat, lon)
-    of the sites the building-scale pack ("detail") is fetched around.
+    new file is complete; a failed pack keeps the old one. The building-scale
+    packs (DETAIL_KEYS, one per region) grow in place instead (`update_region`).
     Returns key -> "ok (n tiles)" / "incomplete (...)" / the error."""
     folder().mkdir(parents=True, exist_ok=True)
     result: dict[str, str] = {}
@@ -845,18 +876,18 @@ def update(keys=("vector", "night", "earth"), *, region=R5, vector_source: str |
                 get = file_reader(src) if Path(src).is_file() else url_reader(src)
                 n = extract_region(get, bands_for(key, region, vector_max=vector_max),
                                    out, name=pack.title, progress=progress)
-            elif key == "detail":
-                n, rep = update_detail(out, sites, max_zoom=detail_max,
-                                       radius_km=detail_radius_km, key=arcgis_key,
-                                       url=detail_url, fresh=detail_fresh,
+            elif key in DETAIL_KEYS:
+                n, rep = update_region(key.split("_", 1)[1].upper(), max_zoom=detail_max,
+                                       key=arcgis_key, url=detail_url, fresh=detail_fresh,
                                        progress=progress, log=log)
                 note = f"; {rep['fetched']:,} new, {rep['kept']:,} kept"
                 if rep["failed"]:
                     result[key] = (f"incomplete ({n:,} tiles, "
                                    f"{out.stat().st_size / 1e6:,.1f} MB{note}; "
-                                   f"{rep['failed']:,} tiles could not be fetched: "
-                                   f"{rep['error']}) — press Update again to fetch "
-                                   "only the missing tiles")
+                                   f"{rep['failed']:,} tiles could not be fetched"
+                                   + (f": {rep['error']}" if rep["error"] else "")
+                                   + ") — press Update again to fetch only the missing "
+                                   "tiles")
                     log(f"{pack.title}: {result[key]}")
                     continue
             else:
@@ -867,18 +898,18 @@ def update(keys=("vector", "night", "earth"), *, region=R5, vector_source: str |
                                       progress=progress)
             result[key] = f"ok ({n:,} tiles, {out.stat().st_size / 1e6:,.1f} MB{note})"
         except Exception as e:                     # keep the old pack
-            for leftover in (out.with_suffix(".part"),):
-                leftover.unlink(missing_ok=True)
+            if key not in DETAIL_KEYS:
+                out.with_suffix(".part").unlink(missing_ok=True)
             result[key] = f"failed: {redact(str(e))}"
         log(f"{pack.title}: {result[key]}")
     return result
 
 
-__all__ = ["DETAIL_MAX", "DETAIL_MIN", "DETAIL_RADIUS_KM", "ESRI_DETAIL", "IRAQ", "PACKS",
-           "Pack", "R5", "RASTER_SOURCES", "UpdateError", "arcgis_key", "bands_for",
-           "build_raster_pack", "detail_estimate", "detail_rings", "detail_sources",
+__all__ = ["DETAIL_KEYS", "DETAIL_MAX", "DETAIL_MIN", "ESRI_DETAIL", "IRAQ", "PACKS", "Pack",
+           "R5", "RASTER_SOURCES", "REGION_NAMES", "Region", "UpdateError", "arcgis_key",
+           "bands_for", "build_raster_pack", "detail_key", "detail_sources",
            "extract_region", "file_reader", "folder", "http_get", "installed",
-           "latest_vector_build", "lonlat_to_tile", "pack_path", "pack_tiles", "plan",
-           "read_header", "redact", "region_bbox", "rings_bbox", "save_arcgis_key",
-           "site_points", "site_tiles", "status", "tile_url", "tiles_in", "update",
-           "update_detail", "url_reader"]
+           "latest_vector_build", "lonlat_to_tile", "pack_path", "plan", "polygon_rows",
+           "read_header", "redact", "region_bbox", "region_count", "region_estimate",
+           "region_rows", "region_tiles", "regions", "save_arcgis_key", "site_points",
+           "status", "tile_url", "tiles_in", "update", "update_region", "url_reader"]

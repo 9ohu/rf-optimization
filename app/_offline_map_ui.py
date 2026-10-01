@@ -5,16 +5,15 @@ The update runs in the background — the map stays usable — and a pack is onl
 replaced once its new file is complete. Nothing else on the map uses the
 Internet.
 
-The building-scale satellite (Esri World Imagery, 0.5 m) is fetched around
-the sites with the user's own ArcGIS API key, for the areas picked here; the
-pack keeps what it has and adds each area, so a large network comes down one
-area at a time.
+The building-scale satellite (Esri World Imagery, 0.5 m) is fetched with the
+user's own ArcGIS API key for whole governorates — Basrah, Nasiriyah,
+Samawah, Amarah — inside each one's boundary, sites or not. One pack per
+region; each grows in place and carries on where an earlier update stopped.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import threading
 
 import streamlit as st
@@ -36,8 +35,8 @@ def _log(msg: str) -> None:
 
 def start_update(keys, region, **detail) -> bool:
     """Start the update in the background; False when one is already running.
-    `detail`: the building-scale pack's options (`OB.update`'s sites, detail_max,
-    detail_radius_km, arcgis_key, detail_fresh)."""
+    `detail`: the building-scale packs' options (`OB.update`'s detail_max,
+    arcgis_key, detail_fresh)."""
     with _LOCK:
         if _JOB["running"]:
             return False
@@ -73,27 +72,17 @@ def _status_html() -> str:
     return "".join(rows)
 
 
-# Esri's offline export (World Imagery for Export) is meant for this many tiles
-# at a time; more is fetched one area at a time
-_ESRI_BATCH = 150_000
-_RADII = {"0.5 km": 0.5, "1 km": 1.0, "2 km": 2.0}
-_ZOOMS = {"z18 · 0.5 m": 18, "z19 · 0.25 m": 19}
-
-
-def _area(site_id) -> str:
-    """BAS3171 -> BAS: the area a site ID names."""
-    m = re.match(r"\s*([A-Za-z]+)", str(site_id))
-    return m.group(1).upper() if m else "Other"
+_ZOOMS = {"z16 · 2 m": 16, "z17 · 1 m": 17, "z18 · 0.5 m": 18, "z19 · 0.25 m": 19}
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
-def _estimate(points: tuple, max_zoom: int, radius_km: float) -> tuple[int, float]:
-    return OB.detail_estimate(list(points), max_zoom=max_zoom, radius_km=radius_km)
+def _estimate(codes: tuple, max_zoom: int) -> dict:
+    return OB.region_estimate(codes, max_zoom=max_zoom)
 
 
-def _detail_options(sites) -> dict | None:
-    """The building-scale imagery's options, or None when it cannot be fetched
-    (no key, no site)."""
+def _detail_options() -> tuple[list, dict] | None:
+    """The building-scale imagery's packs and options, or None when it cannot
+    be fetched (no key, no region)."""
     env = any(os.environ.get(v, "").strip() for v in ("RFOPT_ARCGIS_KEY", "ARCGIS_API_KEY"))
     saved = OB.arcgis_key()
     key = st.text_input(
@@ -110,73 +99,62 @@ def _detail_options(sites) -> dict | None:
         st.caption("Key from the RFOPT_ARCGIS_KEY / ARCGIS_API_KEY environment variable.")
     elif key != saved:
         OB.save_arcgis_key(key)
-    if sites is None or not len(sites):
-        st.warning("No site positions: the building-scale imagery is fetched around "
-                   "the sites of the KMZ.")
-        return None
-    by_area: dict[str, list] = {}
-    for sid, la, lo in zip(sites["site_id"], sites["latitude"], sites["longitude"]):
-        by_area.setdefault(_area(sid), []).append((la, lo))
-    areas = sorted(by_area, key=lambda a: -len(by_area[a]))
+    names = OB.REGION_NAMES
+    # a region already (partly) downloaded is picked: Update carries it on
+    started = [c for c in names if OB.pack_path(OB.detail_key(c)).is_file()]
     pick = st.multiselect(
-        "Areas", areas, default=areas, key="sm_off_areas",
-        format_func=lambda a: f"{a} · {len(by_area[a]):,} sites",
-        help="The sites whose surroundings are fetched. The pack keeps what it "
-             "already has and adds the areas picked now.")
-    c1, c2 = st.columns(2)
-    radius = _RADII[c1.selectbox("Sharp area around each site", list(_RADII),
-                                 key="sm_off_rad",
-                                 help="Radius at full sharpness (zoom 18). It doubles "
-                                      "at each zoom out (2 km at zoom 16, 8 km at 14).")]
-    max_zoom = _ZOOMS[c2.selectbox("Sharpest zoom", list(_ZOOMS), key="sm_off_mz",
-                                   help="Zoom 19 suits the 30 cm imagery of the "
-                                        "large cities; it takes about 4x the tiles "
-                                        "of zoom 18 at the top level.")]
+        "Governorate / Region boundary", list(names), default=started,
+        key="sm_off_areas", format_func=lambda c: f"{c} · {names[c]}",
+        help="The whole governorate is downloaded — every tile inside its boundary, "
+             "with or without sites — so the map can be moved and zoomed anywhere "
+             "in it offline. One pack per region.")
+    max_zoom = _ZOOMS[st.selectbox("Sharpest zoom", list(_ZOOMS), index=2, key="sm_off_mz",
+                                   help="Each zoom in takes about 4x the tiles of the one "
+                                        "before. Zoom 18 shows buildings and rooftops; 19 "
+                                        "suits the 30 cm imagery of the large cities.")]
     fresh = st.checkbox("Download the building-scale imagery again from scratch",
                         key="sm_off_fresh",
-                        help="Otherwise the pack keeps every tile it has and fetches "
-                             "only the missing ones — an update that was cut short "
-                             "carries on where it stopped.")
-    points = tuple(p for a in pick for p in OB.site_points(*zip(*by_area[a])))
-    if not points:
-        st.warning("Pick at least one area.")
+                        help="Otherwise each region's pack keeps every tile it has and "
+                             "fetches only the missing ones — an update that was cut "
+                             "short carries on where it stopped.")
+    if not pick:
+        st.warning("Pick at least one region.")
         return None
-    tiles, mb = _estimate(points, max_zoom, radius)
-    st.caption(f"Around {len(points):,} sites: ≈ {tiles:,} tiles · ≈ "
-               f"{mb / 1000:,.1f} GB (estimate; zooms {OB.DETAIL_MIN}–{max_zoom}).")
-    if tiles > _ESRI_BATCH:
-        st.warning(f"Esri's offline export is meant for up to {_ESRI_BATCH:,} tiles at "
-                   "a time: pick fewer areas and run the update once per area — the "
-                   "pack keeps each area it has.")
+    est = _estimate(tuple(pick), max_zoom)
+    tiles = sum(n for n, _ in est.values())
+    gb = sum(mb for _, mb in est.values()) / 1000
+    lines = " · ".join(f"{names[c]} ≈ {est[c][0]:,} tiles ({est[c][1] / 1000:,.1f} GB)"
+                       for c in pick)
+    st.caption(f"{lines}. Total ≈ {tiles:,} tiles · ≈ {gb:,.1f} GB (estimate; the "
+               f"region boundaries, zooms {OB.DETAIL_MIN}–{max_zoom}). Each tile is one "
+               "request on your ArcGIS account.")
     if not key:
         st.warning("Enter an ArcGIS API key to fetch the building-scale imagery.")
         return None
-    return {"sites": list(points), "detail_max": max_zoom, "detail_radius_km": radius,
-            "arcgis_key": key, "detail_fresh": fresh}
+    return ([OB.detail_key(c) for c in pick],
+            {"detail_max": max_zoom, "arcgis_key": key, "detail_fresh": fresh})
 
 
-def offline_map_box(region, sites=None) -> None:
-    """The box's contents: pack status, the update action and its progress.
-    `sites`: the sites (site_id, latitude, longitude) the building-scale
-    imagery is fetched around."""
+def offline_map_box(region) -> None:
+    """The box's contents: pack status, the update action and its progress."""
     st.html(_status_html())
     st.caption(f"Map packs folder: `{OB.folder()}`. The map reads them offline; "
                "the Internet is used only by the update below.")
     imagery = st.checkbox("Regional satellite: Sentinel-2, 10 m (free; large download)",
                           key="sm_off_img")
-    detail = st.checkbox("Building-scale satellite around the sites: Esri World "
+    detail = st.checkbox("Building-scale satellite for whole regions: Esri World "
                          "Imagery, 0.5 m (ArcGIS key; very large download)",
                          key="sm_off_det")
-    opts = _detail_options(sites) if detail else None
+    opts = _detail_options() if detail else None
     if st.button("Update offline map", icon=":material/download:", key="sm_off_go",
                  width="stretch", disabled=_JOB["running"] or (detail and opts is None),
                  help="Downloads OpenStreetMap streets and places, NASA night lights "
                       "and NASA day satellite for Iraq, at street level for the "
                       "sites' region, and the satellite packs ticked above. Uses the "
                       "Internet once; the map is offline afterwards."):
-        keys = (["vector", "night", "earth"] + (["imagery"] if imagery else [])
-                + (["detail"] if opts else []))
-        start_update(keys, region, **(opts or {}))
+        packs, kw = opts or ([], {})
+        keys = ["vector", "night", "earth"] + (["imagery"] if imagery else []) + packs
+        start_update(keys, region, **kw)
     _job_view()
 
 

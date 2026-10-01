@@ -10,34 +10,45 @@ the other map modes are unchanged.
   `imagery` Sentinel-2 cloudless 2016 (10 m sensor, packed to zoom 13 = 16 m
   pixels at Basra). Leaflet stretched those 16-32x up to zoom 17-20: no
   building, rooftop or street can be in that data. Sharpening cannot add it.
-- **New pack `detail.pmtiles`**: Esri World Imagery (Maxar Vivid aerial /
+- **Building-scale packs, one per governorate**: `detail_bas` (Basrah),
+  `detail_nas` (Nasiriyah / Dhi Qar), `detail_sam` (Samawah / Al-Muthanna),
+  `detail_ema` (Amarah / Maysan) - Esri World Imagery (Maxar Vivid aerial /
   satellite photography, about 0.3-0.6 m in Iraq's cities), zoom 14-18
-  (0.5 m pixels at zoom 18; 19 = 0.25 m optional), around each site:
-  `detail_rings` = 0.5 km at zoom 18, doubled per zoom out (8 km at 14);
-  `site_tiles` keeps the tiles within a ring of a site. Fetched with the
-  user's own ArcGIS API key (`arcgis_key`: RFOPT_ARCGIS_KEY / ARCGIS_API_KEY /
-  `<data>/arcgis_api_key.txt`, never inside the pack folder) from the World
-  Imagery (for Export) service (`ESRI_DETAIL`, `blankTile=false`), then the
-  Location Platform endpoints. `RFOPT_DETAIL_URL` / `--detail-url`: another
-  licensed imagery service instead. Keys are redacted from every message and
-  from the pack metadata (`redact`).
-- **Update** (`update_detail`, `build_raster_pack(reuse=, keep_going=,
-  drop_repeats=, stash=)`): the pack grows - tiles it holds from the same
-  source are kept, only missing ones fetched - so the network comes down one
-  area (BAS / NAS / EMA / SAM) at a time; fetched tiles wait in
-  `detail.download/` until the pack is written, so an update stopped by the
-  app closing or the network dropping carries on where it stopped; a tile that
-  keeps failing is left out ("incomplete", press Update again) and 40 failures
-  in a row stop the fetch (an expired key does not grind on); one picture
-  repeated on many street tiles (a no-imagery placeholder) is dropped; the new
-  file waits for the relay to let go of the old one on Windows (`_swap`). Offline
-  map box: tick *Building-scale satellite*, ArcGIS key, areas, sharp radius,
-  sharpest zoom, start-over, live tile / GB estimate (Esri's export guideline:
-  150,000 tiles at a time). CLI: `--detail --arcgis-key --areas --detail-radius
-  --detail-maxzoom --detail-url --detail-fresh`.
+  (0.5 m pixels; 16, 17 or 19 selectable) for the WHOLE region: every tile
+  touching the governorate's boundary (`regions`, `polygon_rows`: tile
+  centres inside + the outline's tiles, checked against a brute-force
+  intersection test), wherever the sites are. Boundaries:
+  `rfopt/geo/r5_governorates.geojson`, geoBoundaries gbOpen IRQ ADM1 2022
+  (CC0; about 190 vertices per governorate, neighbours share their
+  borders). About 1.4 M tiles / 25 GB for Basrah at zoom 14-18, 1.1 M / 20 GB
+  Dhi Qar, 4.1 M / 75 GB Al-Muthanna, 1.4 M / 25 GB Maysan (`region_estimate`).
+  Fetched with the user's own ArcGIS API key (`arcgis_key`: RFOPT_ARCGIS_KEY /
+  ARCGIS_API_KEY / `<data>/arcgis_api_key.txt`, never inside the pack folder)
+  from the World Imagery (for Export) service (`ESRI_DETAIL`,
+  `blankTile=false`), then the Location Platform endpoints.
+  `RFOPT_DETAIL_URL` / `--detail-url`: another licensed imagery service
+  instead. Keys are redacted from every message and from the pack metadata.
+- **Update** (`update_region`, `pack_writer.GrowingPack`): a region's tiles
+  are appended to its pack as they arrive (index in numpy arrays, about 1x
+  the pack on disk); every 50,000 tiles (or a fifth of the pack, or 20 min) a
+  checkpoint makes the file a complete PMTiles pack - root in alternating
+  slots, then the header - so the map draws the region while it downloads,
+  and an update stopped at any moment carries on from the last checkpoint
+  (what came after it is dropped on reopen). Tiles the pack holds from the
+  same source are never fetched again; a raised zoom fetches only its tiles;
+  another source starts the region over; 40 failures in a row stop the fetch
+  ("incomplete", press Update again); one picture on 16+ street tiles (a
+  no-imagery placeholder) is left out. Offline map box: tick *Building-scale
+  satellite for whole regions*, ArcGIS key, **Governorate / Region boundary**
+  (BAS / NAS / SAM / EMA; a started region is picked), sharpest zoom, start
+  over, per-region tile / GB estimate. CLI: `--detail BAS NAS ...
+  --arcgis-key --detail-maxzoom --detail-url --detail-fresh`. The other packs
+  keep `build_raster_pack` (now `_swap`: on Windows it waits for the relay to
+  let go of the old file).
 - **Drawing** (`rf-basemap.js`): Satellite = Blue Marble (country scale only,
-  hidden past zoom 12) < Sentinel-2 < detail < roads / names. Night Satellite =
-  Sentinel-2 (zoom 10 to its last zoom, never stretched) and detail, colour-
+  hidden past zoom 12) < Sentinel-2 < every installed region pack (each asked
+  only inside its own box) < roads / names. Night Satellite =
+  Sentinel-2 (zoom 10 to its last zoom, never stretched) and the region packs, colour-
   graded to night (`.rf-night-sat`, a CSS colour grade - no sharpening), the
   Black Marble lights screened over them and faded faster once imagery is
   under them, the glowing roads on top. `offline_basemap_config` tells the map
@@ -49,9 +60,11 @@ the other map modes are unchanged.
   apps and ArcGIS Runtime apps - the organisation should confirm its ArcGIS
   agreement covers this Leaflet-based tool, or point `RFOPT_DETAIL_URL` at
   imagery it licenses.
-- Tests: `tests/test_offline_basemap.py` (rings, key handling and redaction,
-  grow / resume / start over, failed tiles, placeholders, the zooms the map is
-  told, the two modes' layers, the Offline map box).
+- Tests: `tests/test_offline_basemap.py` (the governorates, boundary tiles vs
+  brute force, whole-region planning, GrowingPack checkpoints / reopen /
+  leaves / placeholders, the region download: carry on, raised zoom, dying
+  source, start over, key handling and redaction; the zooms and box the map
+  is told; the two modes' layers; the Offline map box).
 
 ## 2026-09-28 - Sites map: offline basemap, Night Satellite, drawer, 3 panels, Comment
 
