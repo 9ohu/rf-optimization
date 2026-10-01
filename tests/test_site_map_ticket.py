@@ -383,3 +383,160 @@ def test_the_neighbour_sector_kpi_panel_draws_each_neighbour_on_all_its_cells(
     # the neighbour is not listed in the Analysis Result
     result = next(b for b in _html(at) if "sm-cm-t" in b)
     assert "BAS0002" not in result and "<span>Neighbour sectors</span>" not in result
+
+
+def _from(origin, bearing_deg: float, metres: float) -> tuple[float, float]:
+    lat = origin[0] + metres * math.cos(math.radians(bearing_deg)) / 111_320.0
+    lon = origin[1] + metres * math.sin(math.radians(bearing_deg)) / (
+        111_320.0 * math.cos(math.radians(origin[0])))
+    return lat, lon
+
+
+def test_the_serving_and_neighbour_sectors_are_lit_by_their_kpis_and_a_click_picks_one(
+        tmp_path, monkeypatch, put_resource):
+    """At an approved user location: the serving sector and each neighbour
+    sector are outlined on the map, green with no KPI issue, red with one; a
+    click on a neighbour sector picks it in the Neighbour Sector KPI chart."""
+    monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
+    AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
+    import json
+
+    import streamlit_folium
+
+    import _relocate
+    from test_complaint_analysis import _target_bytes
+    from rfopt.complaints.target_store import save_target
+
+    user = _at(120, 300)
+    far = _at(120, 700)                        # BAS0002: beyond the user, congested
+    ne = _from(user, 30, 500)                  # BAS0003: north-east of the user, normal
+    csv = _kpi_csv().rstrip("\n").split("\n")
+    for h in pd.date_range("2026-09-13 10:00", "2026-09-13 23:00", freq="h"):
+        csv.append(f"{h:%Y-%m-%d %H:%M},Alpha_BAS0002,CELL_FDD,L_Alpha_BAS0002-1,1,"
+                   f"{90 if 15 <= h.hour <= 17 else 40},-118,100")
+        csv.append(f"{h:%Y-%m-%d %H:%M},Alpha_BAS0003,CELL_FDD,L_Alpha_BAS0003-1,1,"
+                   "30,-118,100")
+    save_target(_target_bytes(), "Target 13-Sep.xlsx")
+    put_resource("kpi", "R5 4G Monitoring Hourly KPI.csv", ("\n".join(csv) + "\n").encode(),
+                 "4G KPI")
+    put_resource("kmz", "R5_Sites.kmz",
+                 _kmz([("BAS0002", far, [(1, 300), (2, 60), (3, 180)]),
+                       ("BAS0003", ne, [(1, 210), (2, 330), (3, 90)])]), "Site KMZ")
+    _relocate.approve("CC-1", *user)
+
+    maps, click = [], {"tip": None}
+
+    def fake_st_folium(fmap, **kw):            # the map, and what a click sends back
+        maps.append(fmap)
+        return {"last_object_clicked_tooltip": click["tip"], "all_drawings": None}
+
+    monkeypatch.setattr(streamlit_folium, "st_folium", fake_st_folium)
+    at = AppTest.from_file(str(APP / "views/site_map.py"), default_timeout=300)
+    at.session_state["sm_tid"] = "CC-1"
+    at.run()
+    assert not at.exception, at.exception
+    nb = at.selectbox(key="sm_nb_sec")
+    assert nb.options == ["BAS0002-S1 · Technical Issue",
+                          "BAS0003-S1 · No Network Issue Detected"]
+    assert nb.value == 0
+
+    # the map: serving + neighbours outlined, green / red by their KPI result
+    fmap = maps[-1]
+    focus = [c for c in fmap._children.values() if type(c).__name__ == "_SectorFocus"]
+    assert len(focus) == 1
+    lit = {p[2]: p[4] for p in json.loads(focus[0].points)}     # azimuth -> KPI issue
+    assert lit == {120.0: False, 300.0: True, 210.0: False}
+    assert (focus[0].ok, focus[0].bad) == ("#22C55E", "#EF4444")
+    html = fmap.get_root().render()
+    assert "interactive: false" in html and "sm-focus-bad" in html
+    assert "pane.style.pointerEvents = 'none'" in html       # clicks go to the beams
+    # the beams' hover names them
+    hits = next(c for c in fmap._children.values() if type(c).__name__ == "_SectorHits")
+    tips = {h[4]: h[5] for h in json.loads(hits.points)}
+    assert tips["BAS0001-S2"].endswith("Serving sector: no KPI issue")
+    assert tips["BAS0002-S1"].endswith("Neighbour sector: KPI issue")
+    assert tips["BAS0003-S1"].endswith("Neighbour sector: no KPI issue")
+    assert "sector" not in tips["BAS0002-S2"].split("·")[-1]
+    # the line from the user location to the serving site, as it was
+    import folium
+    lines = [c for c in fmap._children.values() if isinstance(c, folium.PolyLine)]
+    srv_line = [ln for ln in lines if ln.options.get("color") == "#22C55E"
+                and ln.options.get("weight") == 3]
+    assert len(srv_line) == 1
+    assert [list(p) for p in srv_line[0].locations] == [
+        pytest.approx(list(user), abs=1e-6), pytest.approx(list(SITE), abs=1e-6)]
+    tip = [c for c in srv_line[0]._children.values() if type(c).__name__ == "Tooltip"]
+    assert tip and tip[0].text.startswith("Serving sector BAS0001-S2 · 300 m")
+
+    # a click on a neighbour sector picks it in its chart, at once
+    click["tip"] = "BAS0003-S1 · #1"
+    at.run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="sm_nb_sec").value == 1
+    assert at.session_state["sm_sel_sector"] == "BAS0003-S1"     # its details open too
+    caps = " ".join(c.value for c in at.caption)
+    assert "BAS0003-S1 · OK" in caps
+    # the serving sector: the Serving Site KPI chart is already on it
+    click["tip"] = "BAS0001-S2 · #2"
+    at.run()
+    assert at.selectbox(key="sm_nb_sec").value == 1
+    assert at.session_state["sm_sel_sector"] == "BAS0001-S2"
+    assert "BAS0001-S2" in " ".join(c.value for c in at.caption)
+    # another sector: the charts stay as they are; the selector still works
+    click["tip"] = "BAS0002-S2 · #3"
+    at.run()
+    assert at.selectbox(key="sm_nb_sec").value == 1
+    at.selectbox(key="sm_nb_sec").select(0).run()
+    assert "BAS0002-S1 · Critical 90.0%" in " ".join(c.value for c in at.caption)
+    click["tip"] = "BAS0002-S1 · #4"
+    at.run()
+    assert at.selectbox(key="sm_nb_sec").value == 0
+
+
+def test_without_a_user_location_no_sector_is_lit(tmp_path, monkeypatch, put_resource):
+    """Stage 1 judges the site: no serving sector is picked, none is outlined."""
+    monkeypatch.setenv("RFOPT_CACHE_DIR", str(tmp_path))
+    AppTest = pytest.importorskip("streamlit.testing.v1").AppTest
+    import streamlit_folium
+
+    from test_complaint_analysis import _target_bytes
+    from rfopt.complaints.target_store import save_target
+
+    save_target(_target_bytes(), "Target 13-Sep.xlsx")
+    put_resource("kpi", "R5 4G Monitoring Hourly KPI.csv", _kpi_csv().encode(), "4G KPI")
+    put_resource("kmz", "R5_Sites.kmz", _kmz(), "Site KMZ")
+    maps = []
+    monkeypatch.setattr(streamlit_folium, "st_folium",
+                        lambda fmap, **kw: maps.append(fmap) or {})
+    at = AppTest.from_file(str(APP / "views/site_map.py"), default_timeout=300)
+    at.session_state["sm_tid"] = "CC-1"
+    at.run()
+    assert not at.exception, at.exception
+    assert not [c for c in maps[-1]._children.values()
+                if type(c).__name__ == "_SectorFocus"]
+
+
+def test_map_layers_folds_from_the_top_and_leaves_ticket_and_location_out():
+    src = (APP / "views" / "site_map.py").read_text(encoding="utf-8")
+    import re as _re
+    # the card's contents sit in one body that folds; Ticket ID and User
+    # Location are their own cards beside it, never inside it
+    body = src[src.index('with side.container(key="rf_card_layers"'):
+               src.index('ticket_card = side.container(key="rf_card_sm_ticket"')]
+    assert 'st.html(_LAYERS_HEAD)' in body and 'key="sm_layers_body"' in body
+    for gone in ("Ticket ID", "User Location", "rf_card_sm_ticket", "rf_card_sm_loc"):
+        assert gone not in body
+    css = src[src.index('_PANEL_CSS = """'):src.index('_PANEL_JS = """')]
+    # folded: the body's height goes to 0 (top to bottom), the card is a thin bar
+    assert _re.search(r"html\.sm-layers-closed \.st-key-rf_card_layers "
+                      r"\.st-key-sm_layers_body \{ height: 0;", css)
+    assert "flex: 0 0 auto" in css
+    assert "html.sm-layers-closed .st-key-rf_card_layers" in css
+    # no side drawer any more: no column is narrowed, the map keeps its width,
+    # and nothing hides Ticket ID or User Location
+    for gone in ("sm-drawer-closed [data-testid", "flex: 0 0 46px", "writing-mode",
+                 "sm_drawer_bar", "rf_card_sm_ticket", "rf_card_sm_loc"):
+        assert gone not in css, gone
+    js = src[src.index('_PANEL_JS = """'):src.index("</script>", src.index('_PANEL_JS = """'))]
+    assert "'rf.sm.layers'" in js and "data-sm-layers" in js
+    assert "sm-layers-closed" in js and "data-sm-copy" in js       # Copy still works

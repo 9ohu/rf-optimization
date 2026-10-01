@@ -1,5 +1,33 @@
 # Project status / handoff  (updated 2026-10-01)
 
+## 2026-10-01 (cont.) - Sites map: serving / neighbour highlight, click to chart, folding panel
+
+Site Map page only; the serving / neighbour identification, the KPI analysis,
+the charts, the map modes and the user-location line are unchanged.
+
+- **Highlight** (`_focus_sectors`, `_SectorFocus`): at an approved user location
+  the serving sector and each neighbour sector are outlined in the shape of
+  their beams - green when the sector's existing analysis has no KPI issue,
+  red when any KPI check is above its threshold (`_kpi_issue`: a check with
+  sev > 0, Warning or Critical - the checks its KPI chart shows; the serving
+  sector's from the ticket's stage-2 analysis, each neighbour's from its own).
+  Their own pane (z 450, pointer-events none) over the beams and the drawer's
+  selection, so an opened serving sector keeps its colour and a click still
+  reaches the beam under it. The beam's hover adds "Serving / Neighbour
+  sector: (no) KPI issue". Stage 1 picks no serving sector, so none is lit.
+- **Click to chart** (`_chart_pick`, from `_take_click`): a click on a
+  neighbour sector picks it in the Neighbour Sector KPI selector (`sm_nb_sec`)
+  in the same run; the serving sector is the one the Serving Site KPI chart
+  shows. The selector stays; the Sector Details drawer opens as before.
+- **Map layers & Analysis folds from the top** (`_LAYERS_HEAD`, `_PANEL_CSS`,
+  `_PANEL_JS`): its title bar (chevron) folds the card's contents
+  (`sm_layers_body`, height to 0) into a thin bar and unfolds them downward;
+  `html.sm-layers-closed`, remembered per tab (`rf.sm.layers`), no rerun. Ticket
+  ID and User Location are their own cards under it, never folded; the map
+  keeps its width (the old side drawer bar is gone).
+- Tests: `tests/test_site_map_ticket.py` (two neighbours, colours, hover text,
+  the serving line, clicks picking the chart, stage 1 unlit, the fold).
+
 ## 2026-10-01 - Sites map: building-scale satellite (Satellite / Night Satellite)
 
 Satellite imagery only; markers, beams, Coverage, the analyses, the panels and

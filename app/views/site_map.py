@@ -208,11 +208,11 @@ section[data-testid="stMain"] { overflow: hidden !important; }
 """
 
 
-# The panel beside the map as a drawer. Open: the Map layers & Analysis card
-# (with a » button that folds it), Ticket ID and User Location. Folded: one
-# narrow bar down the map's side — click it to open the panel again. Only
-# classes change (`html.sm-drawer-closed`), so nothing reruns and every widget
-# keeps its state; the map re-lays itself as its frame widens.
+# The Map layers & Analysis card folds from the top down: closed, it is one
+# thin bar — its title and a chevron — above Ticket ID and User Location,
+# which stay where they are; a click unfolds it downward. Only a class changes
+# (`html.sm-layers-closed`), so nothing reruns and every widget keeps its
+# state; the map keeps its width.
 def _chevron(path: str, colour: str = "#20BFFF") -> str:
     """A chevron as an <img> data URI — what st.html lets through."""
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" '
@@ -222,58 +222,34 @@ def _chevron(path: str, colour: str = "#20BFFF") -> str:
             + base64.b64encode(svg.encode()).decode() + '" width="16" height="16" alt="">')
 
 
-_CHEV_R, _CHEV_L = _chevron("M9 6l6 6-6 6"), _chevron("M15 6l-6 6 6 6")
-_DRAWER_CLOSE = (f'<button type="button" class="sm-drawer-x" data-sm-drawer="close" '
-                 f'title="Fold the panel — the map takes the whole width">{_CHEV_R}</button>')
-_DRAWER_BAR = (f'<div class="sm-drawer-bar" data-sm-drawer="open" role="button" tabindex="0" '
-               f'title="Open Map layers &amp; Analysis"><span class="sm-drawer-i">{_CHEV_L}'
-               '</span><span class="sm-drawer-t">Map layers &amp; Analysis</span>'
-               f'<span class="sm-drawer-i">{_CHEV_L}</span></div>')
-_DRAWER_CSS = """
+_LAYERS_HEAD = ('<div class="sm-layers-h" data-sm-layers role="button" tabindex="0" '
+                'aria-expanded="true" title="Fold / unfold Map layers &amp; Analysis">'
+                + _title_html("Map layers & Analysis", "layers")
+                + f'<span class="sm-layers-i">{_chevron("M6 9l6 6 6-6")}</span></div>')
+_PANEL_CSS = """
 <style>
-[data-testid="stColumn"]:has(.st-key-sm_drawer_bar),
-[data-testid="stColumn"]:has(.st-key-sm_mapwrap) {
-    transition: flex-basis .34s ease, width .34s ease, min-width .34s ease,
-                max-width .34s ease;
-}
-.st-key-sm_drawer_bar { display: none !important; }
-html.sm-drawer-closed [data-testid="stColumn"]:has(.st-key-sm_drawer_bar) {
-    flex: 0 0 46px !important; width: 46px !important; min-width: 46px !important;
-    max-width: 46px !important;
-}
-html.sm-drawer-closed [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]
-    .st-key-sm_drawer_bar) { flex-wrap: nowrap !important; }
-html.sm-drawer-closed [data-testid="stColumn"]:has(.st-key-sm_mapwrap) {
-    flex: 1 1 0 !important; width: auto !important; min-width: 0 !important;
-    max-width: none !important;
-}
-html.sm-drawer-closed .st-key-sm_drawer_bar { display: block !important; }
-html.sm-drawer-closed .st-key-rf_card_layers,
-html.sm-drawer-closed .st-key-rf_card_sm_ticket,
-html.sm-drawer-closed .st-key-rf_card_sm_loc { display: none !important; }
-.sm-drawer-bar {
-    height: 800px; width: 46px; box-sizing: border-box; cursor: pointer;
-    display: flex; flex-direction: column; align-items: center;
-    justify-content: space-between; padding: 14px 0; border-radius: 12px;
-    background: linear-gradient(180deg, rgba(13, 41, 69, .92), rgba(7, 21, 37, .92));
-    border: 1px solid #1E3A5F; box-shadow: inset 0 0 0 1px rgba(32, 191, 255, .08),
-    0 4px 18px rgba(0, 0, 0, .35); color: #20BFFF; user-select: none;
-    transition: background .2s ease, border-color .2s ease;
-}
-.sm-drawer-bar:hover { border-color: #1597FF;
-    background: linear-gradient(180deg, rgba(21, 64, 107, .95), rgba(11, 31, 51, .95)); }
-.sm-drawer-t { writing-mode: vertical-rl; transform: rotate(180deg);
-    font: 700 12px 'Segoe UI', system-ui, sans-serif; letter-spacing: .14em;
-    text-transform: uppercase; color: #CBD5E1; }
-.sm-drawer-i { display: flex; }
-.st-key-rf_card_layers { position: relative; }
-.sm-drawer-x {
-    position: absolute; top: 12px; right: 12px; z-index: 5; width: 28px; height: 28px;
-    display: flex; align-items: center; justify-content: center; padding: 0;
-    border-radius: 8px; border: 1px solid #1E3A5F; background: #0D2945; color: #20BFFF;
-    cursor: pointer;
-}
-.sm-drawer-x:hover { background: #15406B; border-color: #1597FF; color: #fff; }
+.sm-layers-h { display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; cursor: pointer; user-select: none; outline: none; }
+.sm-layers-h .rf-card-t { margin-bottom: 0; }
+.sm-layers-h:focus-visible .sm-layers-i { box-shadow: 0 0 0 2px #1597FF; }
+.sm-layers-i { display: flex; align-items: center; justify-content: center;
+    flex: 0 0 28px; width: 28px; height: 28px; border-radius: 8px;
+    border: 1px solid #1E3A5F; background: #0D2945; transform: rotate(180deg);
+    transition: transform .34s ease, background .2s ease, border-color .2s ease; }
+.sm-layers-h:hover .sm-layers-i { background: #15406B; border-color: #1597FF; }
+html.sm-layers-closed .sm-layers-i { transform: rotate(0deg); }
+/* the card's contents unfold from the top down, and fold back up (sized by
+   their height, not by Streamlit's flex basis, so the height can go to 0) */
+.st-key-rf_card_layers .st-key-sm_layers_body { flex: 0 0 auto; height: auto;
+    interpolate-size: allow-keywords; min-height: 0;
+    overflow: clip; overflow-clip-margin: 8px;
+    transition: height .34s ease, opacity .26s ease, visibility 0s linear 0s; }
+html.sm-layers-closed .st-key-rf_card_layers .st-key-sm_layers_body { height: 0;
+    opacity: 0; visibility: hidden; overflow: hidden;
+    transition: height .34s ease, opacity .2s ease, visibility 0s linear .34s; }
+.st-key-rf_card_layers { transition: padding .34s ease; }
+html.sm-layers-closed .st-key-rf_card_layers { gap: 0 !important;
+    padding-top: 6px !important; padding-bottom: 6px !important; }
 /* the Comment: ticket-ready text, copied as it is shown */
 .sm-cm { margin-top: 10px; border: 1px solid #1E3A5F; border-radius: 10px;
     background: rgba(7, 21, 37, .55); }
@@ -290,15 +266,20 @@ html.sm-drawer-closed .st-key-rf_card_sm_loc { display: none !important; }
     background: transparent; border: 0; }
 </style>
 """
-_DRAWER_JS = """
+_PANEL_JS = """
 <script>
 (function () {
   var W = window.parent || window, d = W.document, root = d.documentElement;
-  var KEY = 'rf.sm.drawer';
-  function apply(closed) { root.classList.toggle('sm-drawer-closed', !!closed); }
+  var KEY = 'rf.sm.layers';
+  function apply(closed) {
+    root.classList.toggle('sm-layers-closed', !!closed);
+    var h = d.querySelector('[data-sm-layers]');
+    if (h) h.setAttribute('aria-expanded', closed ? 'false' : 'true');
+  }
+  root.classList.remove('sm-drawer-closed');       // the side drawer this replaced
   try { apply(W.sessionStorage.getItem(KEY) === 'closed'); } catch (e) {}
-  if (W.__rfSmDrawer) return;
-  W.__rfSmDrawer = true;
+  if (W.__rfSmLayers) return;
+  W.__rfSmLayers = true;
   function find(e, attr) {
     var path = e.composedPath ? e.composedPath() : [e.target];
     for (var i = 0; i < path.length; i++) {
@@ -322,9 +303,9 @@ _DRAWER_JS = """
     d.body.removeChild(ta);
   }
   function onClick(e) {
-    var t = find(e, 'data-sm-drawer');
+    var t = find(e, 'data-sm-layers');
     if (t) {
-      var closed = t.getAttribute('data-sm-drawer') === 'close';
+      var closed = !root.classList.contains('sm-layers-closed');
       apply(closed);
       try { W.sessionStorage.setItem(KEY, closed ? 'closed' : 'open'); } catch (e2) {}
       return;
@@ -338,7 +319,7 @@ _DRAWER_JS = """
   d.addEventListener('click', onClick, true);
   d.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' || e.key === ' ') {
-      var t = find(e, 'data-sm-drawer');
+      var t = find(e, 'data-sm-layers');
       if (t) { e.preventDefault(); onClick(e); }
     }
   }, true);
@@ -538,6 +519,51 @@ class _SectorHits(MacroElement):
         self.points = json.dumps(points)
 
 
+class _SectorFocus(MacroElement):
+    """The ticket's serving sector and its neighbour sectors, outlined in the
+    shape of their beams: green when the sector's analysis has no KPI issue,
+    red when it has any. Their own pane, over the beams and the drawer's
+    selection (the opened serving sector keeps its colour), never catches a
+    click: a click goes through to the beam under it, as before."""
+    _template = Template("""
+        {% macro header(this, kwargs) %}
+        <style>
+        .sm-focus-ok { filter: drop-shadow(0 0 4px rgba(34, 197, 94, .9)); }
+        .sm-focus-bad { filter: drop-shadow(0 0 4px rgba(239, 68, 68, .9)); }
+        </style>
+        {% endmacro %}
+        {% macro script(this, kwargs) %}
+        (function () {
+          var m = {{ this._parent.get_name() }};
+          var pts = {{ this.points }};    // [lat, lon, az, radius_m, issue]
+          var pane = m.createPane('smFocus');
+          pane.style.zIndex = 450;          // over the overlays, under the markers
+          pane.style.pointerEvents = 'none';
+          var svgR = L.svg({pane: 'smFocus', padding: 0.6});
+          var K = Math.PI / 180, M = 111320;
+          pts.forEach(function (p) {     // the same 46-degree ring as the beams
+            var c = Math.cos(p[0] * K) || 1e-9, ring = [[p[0], p[1]]];
+            for (var i = 0; i <= 10; i++) {
+              var b = (p[2] - 23 + 4.6 * i) * K;
+              ring.push([p[0] + p[3] * Math.cos(b) / M,
+                         p[1] + p[3] * Math.sin(b) / (M * c)]);
+            }
+            var col = p[4] ? '{{ this.bad }}' : '{{ this.ok }}';
+            L.polygon(ring, {pane: 'smFocus', renderer: svgR, interactive: false, color: col,
+                             weight: 4, opacity: 1, fillColor: col, fillOpacity: 0.42,
+                             className: p[4] ? 'sm-focus-bad' : 'sm-focus-ok'}).addTo(m);
+          });
+        })();
+        {% endmacro %}
+    """)
+
+    def __init__(self, points, ok: str, bad: str):
+        super().__init__()
+        self._name = "SectorFocus"
+        self.points = json.dumps(points)
+        self.ok, self.bad = ok, bad
+
+
 class _ViewKeep(MacroElement):
     """Hold the map view across Streamlit reruns *client-side* (sessionStorage),
     so panning / zooming never has to round-trip to Python.  A fresh search
@@ -694,8 +720,8 @@ class _Ruler(MacroElement):
 # 1. header + sidebar — the view, the KPI, the data sources
 # --------------------------------------------------------------------------- #
 fs = bool(st.session_state.get("sm_fs"))
-st.html(_MAP_CSS + _DRAWER_CSS + (_FS_CSS if fs else ""))
-st.html(_DRAWER_JS, unsafe_allow_javascript=True)
+st.html(_MAP_CSS + _PANEL_CSS + (_FS_CSS if fs else ""))
+st.html(_PANEL_JS, unsafe_allow_javascript=True)
 st.html(_C._CSS)                # the Delay Tickets Analysis cards, charts and badges
 st.html(_C.CA2_CSS)
 
@@ -708,21 +734,20 @@ msg_slot = st.container()
 # the map, and beside it: 1 Map layers & Analysis (Current view and KPI analysis
 # folded into it), 2 Ticket ID, 3 User Location. In full screen the layer
 # controls float on the map, and the view / KPI widgets are kept out of sight.
-# The panel beside the map folds into a narrow drawer bar (its « / » buttons,
-# client-side, remembered for the tab): the map then takes the whole width.
+# Map layers & Analysis folds up into a thin bar (its title bar, client-side,
+# remembered for the tab); Ticket ID and User Location are never folded.
 if not fs:
     with st.container(key="sm_row"):
         map_area, side = st.columns([3.2, 1], gap="small")
-    with side.container(key="sm_drawer_bar"):
-        st.html(_DRAWER_BAR)
     with side.container(key="rf_card_layers", border=True):
-        st.html(_DRAWER_CLOSE + _title_html("Map layers & Analysis", "layers"))
-        ctl_slot = st.container()
-        view_box = st.expander("Current view", icon=":material/tune:", expanded=False)
-        kpi_box = st.expander("KPI analysis", icon=":material/monitoring:",
-                              expanded=False)
-        offline_box = st.expander("Offline map", icon=":material/cloud_off:",
+        st.html(_LAYERS_HEAD)
+        with st.container(key="sm_layers_body"):
+            ctl_slot = st.container()
+            view_box = st.expander("Current view", icon=":material/tune:", expanded=False)
+            kpi_box = st.expander("KPI analysis", icon=":material/monitoring:",
                                   expanded=False)
+            offline_box = st.expander("Offline map", icon=":material/cloud_off:",
+                                      expanded=False)
     ticket_card = side.container(key="rf_card_sm_ticket", border=True)
     loc_card = side.container(key="rf_card_sm_loc", border=True)
     legend_slot = None                     # set under the KPI list, below
@@ -1127,6 +1152,43 @@ site_ll = SITES.set_index("site_id")[["latitude", "longitude"]]
 
 sel_sector = st.session_state.get("sm_sel_sector")
 
+# the ticket's serving sector and its neighbour sectors, as the re-analysis at
+# the approved user location found them, each with its own KPI result
+_FOCUS_OK, _FOCUS_BAD = "#22C55E", "#EF4444"
+
+
+def _kpi_issue(analysis) -> bool:
+    """Any KPI of the sector above its threshold (Warning or Critical) in its
+    existing analysis — the checks its KPI chart shows."""
+    return any(c.sev > 0 for c in (getattr(analysis, "checks", None) or []))
+
+
+def _focus_sectors(tk) -> dict:
+    """SECTOR ID -> (role, KPI issue) of the ticket's serving sector and its
+    neighbour sectors; empty without an approved user location."""
+    re_ = tk["re"] if tk is not None else None
+    if re_ is None:
+        return {}
+    out = {}
+    for nb in re_.neighbours or []:
+        out[str(nb.sector_id).upper()] = ("Neighbour sector", _kpi_issue(nb.analysis))
+    if re_.server is not None:
+        out[str(re_.sector_id).upper()] = ("Serving sector", _kpi_issue(tk["analysis"]))
+    return out
+
+
+FOCUS = _focus_sectors(TK)
+
+
+def _chart_pick(sid: str) -> None:
+    """A click on one of the ticket's neighbour sectors picks it in the
+    Neighbour Sector KPI chart (its selector stays). The serving sector is
+    the one the Serving Site KPI chart already shows."""
+    re_ = TK["re"] if TK is not None else None
+    nbs = [str(nb.sector_id).upper() for nb in (re_.neighbours or [])] if re_ else []
+    if str(sid).upper() in nbs:
+        ss["sm_nb_sec"] = nbs.index(str(sid).upper())
+
 
 def _take_click(tip) -> bool:
     """A beam / tower click or the drawer's close, once per click."""
@@ -1147,6 +1209,7 @@ def _take_click(tip) -> bool:
         if len(real) and sid not in set(real["sector_id"]):
             sid = str(real["sector_id"].iloc[0])
         st.session_state["sm_sel_sector"] = sel_sector = sid
+        _chart_pick(sid)
     else:
         return False
     return True
@@ -1603,6 +1666,9 @@ with map_area, st.container(key="sm_mapwrap"):
                    f"az {r.azimuth_deg:.0f}°")
             if np.isfinite(r.ret_deg):
                 tip += f" · RET {r.ret_deg:.1f}°"
+            _role = FOCUS.get(str(r.sector_id).upper())
+            if _role:
+                tip += f" · {_role[0]}: {'KPI issue' if _role[1] else 'no KPI issue'}"
             hits.append([round(float(r.latitude), 6),
                          round(float(r.longitude), 6),
                          round(float(r.azimuth_deg), 1), round(float(rad), 1),
@@ -1621,6 +1687,16 @@ with map_area, st.container(key="sm_mapwrap"):
                            (0.12 if coverage_mode else 0.3)},
                        smooth_factor=2).add_to(fg_beams)
     fg_beams.add_to(fmap)
+    # the ticket's serving + neighbour sectors: green / red by their KPI result
+    _focus_pts = []
+    for r in SECT[SECT["sector_id"].astype(str).str.upper().isin(set(FOCUS))].itertuples():
+        if np.isfinite(r.azimuth_deg):
+            _focus_pts.append([round(float(r.latitude), 6), round(float(r.longitude), 6),
+                               round(float(r.azimuth_deg), 1),
+                               round(float(_beam_radius(beam_len, r.elec_tilt_deg)), 1),
+                               bool(FOCUS[str(r.sector_id).upper()][1])])
+    if _focus_pts:
+        fmap.add_child(_SectorFocus(_focus_pts, _FOCUS_OK, _FOCUS_BAD))
     if hits:
         fmap.add_child(_SectorHits(hits))
 
