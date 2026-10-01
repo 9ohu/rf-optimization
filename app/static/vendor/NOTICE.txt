@@ -20,3 +20,12 @@ protomaps/          protomaps-leaflet 5.1.0  (dist/protomaps-leaflet.js)
                     BSD 3-Clause License, (c) Protomaps LLC
                     They draw the Sites map's offline basemap from the local
                     map packs (rfopt/geo/offline_basemap.py).
+
+Offline map imagery (not shipped with the app; fetched by the user's
+"Update offline map" into the local pack folder, rfopt/geo/offline_basemap.py):
+                    NASA Black Marble / Blue Marble (NASA GIBS) - public domain
+                    Sentinel-2 cloudless 2016 by EOX IT Services GmbH
+                    (modified Copernicus Sentinel data) - CC BY 4.0
+                    Esri World Imagery - Imagery (c) Esri, Maxar, Earthstar
+                    Geographics; fetched with the user's own ArcGIS API key
+                    and used under that account's Esri terms of use

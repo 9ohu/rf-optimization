@@ -89,8 +89,10 @@ _REGION = (30.95, 46.75, 8)          # the whole of R5
 
 # the basemap modes. Every one is drawn offline, from the local map packs
 # (`rfopt.geo.offline_basemap`, `_map_assets.add_offline_basemap`): no tile
-# server is asked while the map is used. Coverage is the day satellite under
-# the measured LTE coverage grid; Night Satellite the NASA night lights under
+# server is asked while the map is used. Satellite is the day imagery, at
+# building scale (0.5 m) around the sites when that pack is installed;
+# Coverage the day satellite under the measured LTE coverage grid; Night
+# Satellite the same imagery graded to night under the NASA night lights and
 # the glowing street network.
 _BASEMAPS = {
     "Dark": {"max_zoom": 20},
@@ -1773,7 +1775,8 @@ if offline_box is not None:
     with offline_box:
         from _offline_map_ui import offline_map_box as _offline_map_box
         from rfopt.geo.offline_basemap import region_bbox as _region_bbox
-        _offline_map_box(_region_bbox(SITES["latitude"], SITES["longitude"]))
+        _offline_map_box(_region_bbox(SITES["latitude"], SITES["longitude"]),
+                         SITES[["site_id", "latitude", "longitude"]])
 
 # --------------------------------------------------------------------------- #
 # 4. the legend card (beside the map), the panels under the map

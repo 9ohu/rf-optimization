@@ -4,8 +4,10 @@
  * rfopt/geo/offline_basemap.py), served by the app's local relay:
  *   region.pmtiles   vector: streets, water, places (OpenStreetMap / Protomaps)
  *   night.pmtiles    raster: NASA Black Marble night lights
- *   earth.pmtiles    raster: NASA Blue Marble (country scale)
- *   imagery.pmtiles  raster: Sentinel-2 cloudless (street scale), optional
+ *   earth.pmtiles    raster: NASA Blue Marble (country scale, 500 m)
+ *   imagery.pmtiles  raster: Sentinel-2 cloudless (regional scale, 10 m), optional
+ *   detail.pmtiles   raster: Esri World Imagery (building scale, 0.5 m) around
+ *                    the sites, optional
  * No request ever leaves the machine. A pack that is not installed is left
  * out, and the map says which one is missing.
  *
@@ -92,9 +94,15 @@
     document.head.appendChild(s);
   }
 
+  // Night Satellite over day imagery: the imagery graded to night (dark,
+  // cool, colour drained — a colour grade, its pixels untouched), the NASA
+  // city lights screened over it so they glow without hiding it
   css(".rf-night-roads canvas{filter:drop-shadow(0 0 1.6px rgba(255,170,60,.9))" +
       " drop-shadow(0 0 5px rgba(255,140,30,.35))}" +
       ".rf-night-lights{filter:saturate(1.35) brightness(1.15) contrast(1.1)}" +
+      ".rf-night-glow{mix-blend-mode:screen}" +
+      ".rf-night-sat{filter:grayscale(.6) sepia(.4) hue-rotate(185deg) saturate(1.5)" +
+      " brightness(.36) contrast(1.3)}" +
       ".rf-bm-note{background:rgba(7,21,37,.92);color:#cbd5e1;border:1px solid #1E3A5F;" +
       "border-radius:8px;padding:5px 9px;font:600 11px 'Segoe UI',system-ui,sans-serif;" +
       "max-width:330px;box-shadow:0 3px 12px rgba(0,0,0,.45)}" +
@@ -144,46 +152,81 @@
       } else { missing.push("vector"); }
     } else if (mode === "Night Satellite") {
       mapEl.style.background = NIGHT.background;
+      // the day imagery, graded to night: the regional imagery only at the
+      // zooms it holds (never stretched into a blur), the building-scale
+      // pack from there in, so blocks and streets read
+      var graded = false;
+      if (has("imagery")) {
+        raster("imagery", {zIndex: 1, minZoom: 10, maxZoom: packs.imagery.native_max,
+                           className: "rf-night-sat"}).addTo(map);
+        graded = true;
+      }
+      if (has("detail")) {
+        raster("detail", {zIndex: 2, minZoom: packs.detail.min_zoom,
+                          className: "rf-night-sat"}).addTo(map);
+        graded = true;
+      } else { missing.push("detail"); }
       var lit = has("night");
       if (lit) {
-        var lights = raster("night", {zIndex: 1, className: "rf-night-lights"}).addTo(map);
+        var lights = raster("night", {
+          zIndex: 3, className: "rf-night-lights" + (graded ? " rf-night-glow" : "")
+        }).addTo(map);
         // NASA's night lights stop at 500 m pixels: fade them out as the map
-        // zooms in, where the glowing streets take over
+        // zooms in, where the glowing streets (and the imagery) take over.
+        // Over the imagery they fade faster — a bright city core screened
+        // over it at street zoom would wash the night out.
+        var FADE = [1, 0.8, 0.55, 0.35, 0.22, 0.12];        // zoom 10 .. 15+
         var fade = function () {
           var z = map.getZoom();
-          lights.setOpacity(z <= 10 ? 1 : z >= 16 ? 0.35 : 1 - (z - 10) * 0.108);
+          lights.setOpacity(graded
+            ? FADE[Math.max(0, Math.min(FADE.length - 1, Math.round(z) - 10))]
+            : (z <= 10 ? 1 : z >= 16 ? 0.35 : 1 - (z - 10) * 0.108));
         };
         map.on("zoomend", fade);
         fade();
       } else { missing.push("night"); }
       if (has("vector")) {
+        var under = lit || graded;
         var night = {
-          paintRules: lit ? onlyLines(P.paintRules(NIGHT)) : P.paintRules(NIGHT),
+          paintRules: under ? onlyLines(P.paintRules(NIGHT)) : P.paintRules(NIGHT),
           labelRules: P.labelRules(NIGHT, cfg.lang || "en"),
-          backgroundColor: lit ? undefined : NIGHT.background,
-          className: "rf-night-roads", zIndex: 2
+          backgroundColor: under ? undefined : NIGHT.background,
+          className: "rf-night-roads", zIndex: 4
         };
         if (refPane) { night.pane = refPane; }
         vector(night).addTo(map);
       } else { missing.push("vector"); }
     } else {                                   // Satellite, Coverage
       mapEl.style.background = "#0B1F33";
+      var sat = mode === "Satellite";
       var day = false;
-      if (has("earth")) { raster("earth", {zIndex: 1}).addTo(map); day = true; }
+      // Satellite: NASA Blue Marble at country scale only — its 500 m pixels
+      // are never stretched over a street; the imagery packs draw those
+      if (has("earth")) {
+        raster("earth", sat ? {zIndex: 1, maxZoom: 12} : {zIndex: 1}).addTo(map);
+        day = true;
+      }
       if (has("imagery")) { raster("imagery", {zIndex: 2}).addTo(map); day = true; }
       if (!has("imagery")) { missing.push("imagery"); }
+      // the building-scale imagery over the rest, around the sites
+      if (sat && has("detail")) {
+        raster("detail", {zIndex: 3, minZoom: packs.detail.min_zoom}).addTo(map);
+        day = true;
+      }
+      if (sat && !has("detail")) { missing.push("detail"); }
       if (has("vector")) {
         var over = day ? {
           paintRules: onlyLines(P.paintRules(OVER_SAT)),
-          labelRules: P.labelRules(OVER_SAT, cfg.lang || "en"), zIndex: 3
-        } : {flavor: "dark", zIndex: 3};
+          labelRules: P.labelRules(OVER_SAT, cfg.lang || "en"), zIndex: 4
+        } : {flavor: "dark", zIndex: 4};
         if (refPane) { over.pane = refPane; }
         vector(over).addTo(map);
       } else { missing.push("vector"); }
     }
     if (missing.length) {
       var names = {vector: "streets &amp; places", night: "night lights",
-                   imagery: "street-scale imagery", earth: "satellite"};
+                   imagery: "regional imagery (10 m)",
+                   detail: "building-scale imagery (0.5 m)", earth: "satellite"};
       note(map, "<b>Offline map</b> — not installed: " +
            missing.map(function (k) { return names[k] || k; }).join(", ") +
            ". Map layers &amp; Analysis → Offline map → Update.");

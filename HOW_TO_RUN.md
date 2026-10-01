@@ -66,15 +66,42 @@ Night Satellite** — from local map packs, with **no Internet**. Fetch the pack
 once (this is the only step that uses the Internet):
 
 * in the app: **Map layers & Analysis → Offline map → Update offline map**
-  (tick *street-scale satellite imagery* for the large Sentinel-2 pack), or
-* from a terminal: `python scripts/update_offline_map.py` (`--imagery` for the
-  large imagery pack; `--help` for the options).
+  (tick *Regional satellite* for the Sentinel-2 pack and *Building-scale
+  satellite* for the sharp imagery around the sites), or
+* from a terminal: `python scripts/update_offline_map.py` (`--imagery`,
+  `--detail --arcgis-key KEY --areas BAS`; `--help` for the options).
+
+**Building-scale satellite (sharp buildings, rooftops and streets).** The
+Satellite and Night Satellite maps need the *building-scale* pack: Esri World
+Imagery (Maxar aerial / satellite photography, about 0.3–0.6 m in Iraq's
+cities), stored up to zoom 18 (0.5 m pixels) around every site. It is
+licensed imagery, fetched with **your own ArcGIS API key**:
+
+1. Get an ArcGIS account — an ArcGIS Online organisational account, or an
+   *ArcGIS Location Platform* developer account (free tier,
+   https://location.arcgis.com) — and an **API key with the basemaps
+   privilege**.
+2. Sites map → Map layers & Analysis → **Offline map** → tick
+   *Building-scale satellite around the sites*, paste the key (it is kept on
+   this PC only, never in the map packs).
+3. Pick the **areas** (BAS, NAS, EMA, SAM), the sharp radius around each site
+   and the sharpest zoom; the box shows the tile count and size before you
+   start (roughly 4–5 GB for about 2,000 sites at the defaults). Press
+   **Update offline map**.
+4. Large networks: one area at a time — the pack keeps what it already has
+   and adds each area; an update that was cut short carries on where it
+   stopped when you press Update again.
+
+Without that pack the satellite maps fall back to Sentinel-2 (10 m — fields
+and town outlines, no single buildings), the sharpest openly licensed imagery.
 
 The packs are saved to `~/.rfopt_cache/resources/basemap` (or the folder in
 `RFOPT_BASEMAP_DIR`). Copy that folder to another PC to use the same offline
 map there. Sources: OpenStreetMap (streets, places), NASA Black Marble (night
 lights), NASA Blue Marble (country-scale satellite), Sentinel-2 cloudless 2016
-by EOX (street-scale satellite, CC BY 4.0).
+by EOX (regional satellite, CC BY 4.0), Esri World Imagery (building-scale
+satellite: Esri, Maxar, Earthstar Geographics; used under your ArcGIS
+account's terms).
 
 ## Where things are saved
 

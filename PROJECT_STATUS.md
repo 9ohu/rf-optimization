@@ -1,4 +1,57 @@
-# Project status / handoff  (updated 2026-09-28)
+# Project status / handoff  (updated 2026-10-01)
+
+## 2026-10-01 - Sites map: building-scale satellite (Satellite / Night Satellite)
+
+Satellite imagery only; markers, beams, Coverage, the analyses, the panels and
+the other map modes are unchanged.
+
+- **Why it was blurred**: the packs held no street-level imagery. `earth` is
+  NASA Blue Marble (500 m pixels, GIBS Level8, zoom 0-8) and the optional
+  `imagery` Sentinel-2 cloudless 2016 (10 m sensor, packed to zoom 13 = 16 m
+  pixels at Basra). Leaflet stretched those 16-32x up to zoom 17-20: no
+  building, rooftop or street can be in that data. Sharpening cannot add it.
+- **New pack `detail.pmtiles`**: Esri World Imagery (Maxar Vivid aerial /
+  satellite photography, about 0.3-0.6 m in Iraq's cities), zoom 14-18
+  (0.5 m pixels at zoom 18; 19 = 0.25 m optional), around each site:
+  `detail_rings` = 0.5 km at zoom 18, doubled per zoom out (8 km at 14);
+  `site_tiles` keeps the tiles within a ring of a site. Fetched with the
+  user's own ArcGIS API key (`arcgis_key`: RFOPT_ARCGIS_KEY / ARCGIS_API_KEY /
+  `<data>/arcgis_api_key.txt`, never inside the pack folder) from the World
+  Imagery (for Export) service (`ESRI_DETAIL`, `blankTile=false`), then the
+  Location Platform endpoints. `RFOPT_DETAIL_URL` / `--detail-url`: another
+  licensed imagery service instead. Keys are redacted from every message and
+  from the pack metadata (`redact`).
+- **Update** (`update_detail`, `build_raster_pack(reuse=, keep_going=,
+  drop_repeats=, stash=)`): the pack grows - tiles it holds from the same
+  source are kept, only missing ones fetched - so the network comes down one
+  area (BAS / NAS / EMA / SAM) at a time; fetched tiles wait in
+  `detail.download/` until the pack is written, so an update stopped by the
+  app closing or the network dropping carries on where it stopped; a tile that
+  keeps failing is left out ("incomplete", press Update again) and 40 failures
+  in a row stop the fetch (an expired key does not grind on); one picture
+  repeated on many street tiles (a no-imagery placeholder) is dropped; the new
+  file waits for the relay to let go of the old one on Windows (`_swap`). Offline
+  map box: tick *Building-scale satellite*, ArcGIS key, areas, sharp radius,
+  sharpest zoom, start-over, live tile / GB estimate (Esri's export guideline:
+  150,000 tiles at a time). CLI: `--detail --arcgis-key --areas --detail-radius
+  --detail-maxzoom --detail-url --detail-fresh`.
+- **Drawing** (`rf-basemap.js`): Satellite = Blue Marble (country scale only,
+  hidden past zoom 12) < Sentinel-2 < detail < roads / names. Night Satellite =
+  Sentinel-2 (zoom 10 to its last zoom, never stretched) and detail, colour-
+  graded to night (`.rf-night-sat`, a CSS colour grade - no sharpening), the
+  Black Marble lights screened over them and faded faster once imagery is
+  under them, the glowing roads on top. `offline_basemap_config` tells the map
+  each installed pack's real zooms (header), so a pack is drawn at full
+  resolution up to its last zoom. Coverage draws exactly what it drew before.
+- **Limit**: openly licensed imagery stops at 10 m (Sentinel-2): no building.
+  Google-Earth-like detail needs commercial imagery; Esri World Imagery is the
+  one the app already used online. Esri states exported tiles are for ArcGIS
+  apps and ArcGIS Runtime apps - the organisation should confirm its ArcGIS
+  agreement covers this Leaflet-based tool, or point `RFOPT_DETAIL_URL` at
+  imagery it licenses.
+- Tests: `tests/test_offline_basemap.py` (rings, key handling and redaction,
+  grow / resume / start over, failed tiles, placeholders, the zooms the map is
+  told, the two modes' layers, the Offline map box).
 
 ## 2026-09-28 - Sites map: offline basemap, Night Satellite, drawer, 3 panels, Comment
 

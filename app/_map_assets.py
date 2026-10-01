@@ -255,17 +255,22 @@ class OfflineBasemap(MacroElement):
 def offline_basemap_config(mode: str, *, ref_pane: str | None = None,
                            lang: str = "en") -> dict:
     """What the page tells `rfBasemap`: the mode, where the packs are served,
-    and which are installed."""
-    from rfopt.geo.offline_basemap import PACKS, installed
+    and which are installed — with the last zoom each installed pack holds
+    (drawn up to it at full resolution, scaled only beyond)."""
+    from rfopt.geo.offline_basemap import PACKS, pack_path, read_header
     try:
         from _tile_proxy import packs_url
         base = packs_url()
     except Exception:
         base = None
-    return {"mode": mode, "base": base, "lang": lang, "refPane": ref_pane,
-            "packs": {k: {"file": p.file, "native_max": p.native_max,
-                          "attribution": p.attribution, "installed": installed(k)}
-                      for k, p in PACKS.items()}}
+    packs = {}
+    for k, p in PACKS.items():
+        head = read_header(pack_path(k)) if pack_path(k).is_file() else None
+        packs[k] = {"file": p.file, "attribution": p.attribution,
+                    "native_max": head["max_zoom"] if head else p.native_max,
+                    "min_zoom": head["min_zoom"] if head else 0,
+                    "installed": head is not None}
+    return {"mode": mode, "base": base, "lang": lang, "refPane": ref_pane, "packs": packs}
 
 
 def add_offline_basemap(fmap: folium.Map, mode: str, *, ref_pane: str | None = None) -> dict:
