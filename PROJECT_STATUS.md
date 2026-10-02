@@ -1,4 +1,27 @@
-# Project status / handoff  (updated 2026-10-01)
+# Project status / handoff  (updated 2026-10-02)
+
+## 2026-10-02 - Neighbour sectors: only the first relevant sector in each direction
+
+Neighbour selection only (`rfopt/complaints/relocate.neighbour_sectors`); the
+serving sector, the neighbours' KPI analysis, charts, highlight and UI are
+unchanged.
+
+- Candidates as before: per other site, its sector facing the user (azimuth
+  within `FACING_DEG` 60 of the bearing from the site to the user), site
+  within `RELEVANT_M` 3 km.
+- "Behind" is now geometric, with no angle or distance of its own (the fixed
+  `SAME_DIRECTION_DEG` 30 is gone): a candidate is left out when a closer
+  relevant site - another facing candidate, or the serving site - lies inside
+  the circle whose diameter joins the user to the candidate (the angle user -
+  closer site - candidate is obtuse). The closer that site, the wider the cone
+  it hides (a site at half the distance hides up to 60 deg either side), while
+  two sites side by side at about the same distance both stay. The 30 deg rule
+  kept a farther site just over 30 deg off a much closer one (the Amarah case:
+  EMA5954 behind EMA3637, EMA4917, EMA5980, and EMA4919 behind the serving
+  EMA0384); the new rule gives the expected Ziraa / HayRisalah / OilHouse.
+- Tests: `tests/test_analysis_rules.py` (the Amarah example rebuilt from the
+  screenshot, the widening cone, side by side, a chain; the per-cell
+  neighbour test's user moved so its neighbour is not behind the serving site).
 
 ## 2026-10-01 (cont.) - Sites map: serving / neighbour highlight, click to chart, folding panel
 

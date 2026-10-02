@@ -19,9 +19,10 @@ longitude is approved on the Sites map:
   A location with no grid, or RSRP at or below the poor line, is a Coverage
   Issue in the result; with good coverage the KPI analysis decides.
 * **Neighbour sectors:** the sectors of other sites facing the user location,
-  the nearest one in each direction around it (`neighbour_sectors`) — no fixed
-  count — each analysed on all of its cells; context around the user, not
-  part of the verdict.
+  only the first in each direction around it — a farther one behind a closer
+  relevant site is left out (`neighbour_sectors`) — no fixed count, each
+  analysed on all of its cells; context around the user, not part of the
+  verdict.
 
 Nothing is invented: a value the data does not carry reads "N/A".
 """
@@ -158,10 +159,9 @@ def tracks_for(sector_id: str, site_id: str, sec_tracks, site_tracks) -> list:
 # neighbour sectors around a user location: no fixed count. A sector is a
 # candidate when it faces the user (its azimuth within FACING_DEG of the
 # bearing from its site to the user) and its site is within RELEVANT_M; of the
-# candidates seen from the user in the same direction (bearings closer than
-# SAME_DIRECTION_DEG), only the nearest is kept — a farther one is behind it.
+# candidates in one direction from the user only the first is kept — a
+# farther one behind a closer relevant site is left out (`neighbour_sectors`).
 FACING_DEG = 60.0
-SAME_DIRECTION_DEG = 30.0
 RELEVANT_M = 3000.0
 BEST, TICKET = "best server", "ticket site"
 
@@ -202,11 +202,15 @@ def neighbour_sectors(lat: float, lon: float, sectors: pd.DataFrame, serving_sit
     1. Candidates: per site, its sector facing the point (the smallest gap
        between its azimuth and the bearing from the site to the point), kept
        when that gap is within FACING_DEG and the site within RELEVANT_M.
-    2. Direction: each candidate is placed by the bearing from the point to its
-       site. Nearest first, a candidate is kept unless a closer kept sector —
-       the serving sector included — lies in the same direction (bearings
-       within SAME_DIRECTION_DEG): the farther one is behind it.
-    The count is whatever the directions around the point give, never fixed."""
+    2. The first in each direction: a candidate is left out when it is behind
+       a closer relevant site — another candidate, or the serving site — as
+       seen from the point: that site lies inside the circle whose diameter
+       joins the point to the candidate (the angle point – closer site –
+       candidate is obtuse). The closer that site, the wider the angle it
+       hides behind it; two sites side by side at about the same distance
+       are both first. No angle or distance is fixed for it.
+    The count is whatever the directions around the point give, never fixed;
+    nearest first."""
     if sectors is None or len(sectors) == 0 or not (np.isfinite(lat) and np.isfinite(lon)):
         return []
     need = ["latitude", "longitude", "azimuth_deg"]
@@ -231,20 +235,23 @@ def neighbour_sectors(lat: float, lon: float, sectors: pd.DataFrame, serving_sit
         if r.site_id not in facing or off < facing[r.site_id].az_diff_deg:
             facing[r.site_id] = Server(str(r.sector_id), str(r.site_id), float(r.dist_m),
                                        float(brg), float(r.azimuth_deg), float(off))
-    # 2. one per direction: the nearest; a farther one behind it is left out
-    taken: list[float] = []          # the directions (from the point) already served
+    # 2. the first in each direction: one behind a closer relevant site is out
+    def at(srv: Server) -> tuple[float, float]:
+        """The site, in metres east / north of the point."""
+        toward = math.radians((srv.bearing_deg + 180.0) % 360.0)   # point -> site
+        return srv.distance_m * math.sin(toward), srv.distance_m * math.cos(toward)
+
+    def behind(far: Server, near: Server) -> bool:
+        """`near` lies inside the circle on the diameter point – `far`."""
+        (fx, fy), (nx, ny) = at(far), at(near)
+        return nx * (nx - fx) + ny * (ny - fy) < 0.0
+
+    relevant = [srv for srv in facing.values() if srv.distance_m >= 1.0]
     if serving is not None and serving.distance_m >= 1.0:
-        taken.append((serving.bearing_deg + 180.0) % 360.0)
-    out: list[Server] = []
-    for srv in sorted(facing.values(), key=lambda x: (x.distance_m, x.az_diff_deg)):
-        toward = (srv.bearing_deg + 180.0) % 360.0      # from the point to the site
-        if srv.distance_m >= 1.0 and any(az_gap(toward, t) < SAME_DIRECTION_DEG
-                                         for t in taken):
-            continue
-        out.append(srv)
-        if srv.distance_m >= 1.0:
-            taken.append(toward)
-    return out
+        relevant.append(serving)
+    return [srv for srv in sorted(facing.values(), key=lambda x: (x.distance_m, x.az_diff_deg))
+            if srv.distance_m < 1.0
+            or not any(near is not srv and behind(srv, near) for near in relevant)]
 
 
 @dataclass
@@ -402,7 +409,7 @@ def parse_latlon(text: str):
     return None
 
 
-__all__ = ["BEST", "FACING_DEG", "NA", "RELEVANT_M", "SAME_DIRECTION_DEG", "Neighbour", "Relocated", "Server", "TICKET", "az_gap",
+__all__ = ["BEST", "FACING_DEG", "NA", "RELEVANT_M", "Neighbour", "Relocated", "Server", "TICKET", "az_gap",
            "bearing", "best_server", "describe", "facing_sector", "fmt_metres", "lead_check",
            "metres", "neighbour_sectors", "parse_latlon", "reanalyse", "sector_frame",
            "sector_of", "sector_tracks", "ticket_site", "tracks_for"]

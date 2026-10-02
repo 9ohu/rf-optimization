@@ -236,7 +236,9 @@ def test_the_serving_sector_is_analysed_on_every_one_of_its_cells():
 
 def test_the_neighbour_sectors_facing_the_user_each_on_all_of_its_cells():
     frames = [_lte(), _lte(site="BAS0002", prb_c2=lambda h: 30)]
-    lat, lon = _at(120, 300)
+    # 300 m east of BAS0001 (its S2 serves): BAS0002, north of BAS0001, is
+    # beside the serving site as seen from the user — first in its direction
+    lat, lon = _at(80, 300)
     r = RL.reanalyse(lat, lon, PT, _sectors(), RL.sector_tracks(frames), build_tracks(frames),
                      2.0, site_id="BAS0001")
     sites = [nb.server.site_id for nb in r.neighbours]
@@ -248,6 +250,13 @@ def test_the_neighbour_sectors_facing_the_user_each_on_all_of_its_cells():
     assert prb.cells == [f"L_Alpha_BAS0002-{int(nb2.sector_id[-1])}"]  # all of its cells
     # the neighbours never change the serving sector's verdict
     assert r.analysis.classification == TECHNICAL
+    # 300 m south-east instead, BAS0002 is behind the serving site (549 m, only
+    # 32 deg off it): not a neighbour
+    lat, lon = _at(120, 300)
+    r = RL.reanalyse(lat, lon, PT, _sectors(), RL.sector_tracks(frames), build_tracks(frames),
+                     2.0, site_id="BAS0001")
+    assert r.sector_id == "BAS0001-S2"
+    assert "BAS0002" not in [nb.server.site_id for nb in r.neighbours]
 
 
 USER = (30.60, 47.90)
@@ -431,3 +440,52 @@ def test_site_flow_control_and_rtwp_are_judged_per_site_hour():
     assert (n, worst) == (1, 120_000) and hours == frozenset([t[0]])
     n, worst, _, hours = A.site_rtwp(kpi, "rtwp", sites)["BAS0001"]
     assert (n, worst) == (1, -85) and hours == frozenset([t[0]])
+
+
+def test_only_the_first_relevant_sector_in_each_direction_the_amarah_example():
+    """The Sites map case: the user near Risalah2 (serving), first-ring sites
+    around it, and farther sites behind them that also face the user. A
+    farther one is behind a closer relevant site — another facing candidate
+    or the serving site — when that site lies inside the circle whose
+    diameter joins the user to it; the closer it is, the wider it hides."""
+    m = 3.0                                          # metres per pixel of the screenshot
+
+    def site(name, bearing, px, off=20.0):
+        return _site_at(name, bearing, px * m, facing_user=False,
+                        azimuth=(bearing + 180.0 + off) % 360.0)
+
+    serving = RL.Server("EMA0384-S1", "EMA0384", 121 * m, 17.8, 17.8, 0.0)  # SSW of the user
+    rows = [site("EMA5950", 346.3, 203),             # Ziraa       - first in the north
+            site("EMA3648", 260.9, 235),             # HayRisalah  - first in the west
+            site("EMA3637", 71.7, 207),              # OilHouse    - first in the east
+            site("EMA4917", 298.0, 436),             # Thewra2     - behind Ziraa / HayRisalah
+            site("EMA5980", 33.5, 435),              # Awasha3     - behind Ziraa / OilHouse
+            site("EMA5954", 104.0, 416),             # Industry    - behind OilHouse (32 deg off it)
+            site("EMA4919", 145.1, 437),             # DoorNafot2  - behind the serving site
+            # sites that do not face the user: never neighbours, hide nothing
+            _site_at("EMA3613", 200.0, 300 * m, facing_user=False, azimuth=200.0),
+            _site_at("EMA0786", 280.0, 150 * m, facing_user=False, azimuth=280.0)]
+    got = _pick(rows, serving="EMA0384", server=serving)
+    assert got == ["EMA5950-S1", "EMA3637-S1", "EMA3648-S1"]       # nearest first
+    # each red one is facing the user and in range: only being behind drops it
+    for name in ("EMA4917", "EMA5980", "EMA5954", "EMA4919"):
+        alone = [r for r in rows if r["site_id"] == name]
+        assert _pick(alone, serving="EMA0384") == [f"{name}-S1"]
+    # without the serving site in front of it, DoorNafot2 is first in its direction
+    assert "EMA4919-S1" in _pick(rows, serving="EMA0384")
+
+
+def test_a_closer_site_hides_a_wider_cone_and_side_by_side_sites_both_stay():
+    # A 300 m north; B 600 m at 50 deg: A is inside the circle on user-B
+    # (300 < 600 cos 50 = 386): B is behind it, though 50 deg off
+    assert _pick([_site_at("AAA0001", 0, 300), _site_at("BBB0001", 50, 600)]) == ["AAA0001-S1"]
+    # the same B at 450 m is beside A, not behind it (300 > 450 cos 50 = 289)
+    assert _pick([_site_at("AAA0001", 0, 300), _site_at("BBB0001", 50, 450)]) == [
+        "AAA0001-S1", "BBB0001-S1"]
+    # two sites at the same distance, 20 deg apart: side by side, both first
+    assert _pick([_site_at("AAA0001", 0, 400), _site_at("BBB0001", 20, 400)]) == [
+        "AAA0001-S1", "BBB0001-S1"]
+    # a chain in one direction, 100 / 300 / 500 m: only the first
+    rows = [_site_at("AAA0001", 0, 100), _site_at("BBB0001", 4, 300),
+            _site_at("CCC0001", 357, 500)]
+    assert _pick(rows) == ["AAA0001-S1"]
