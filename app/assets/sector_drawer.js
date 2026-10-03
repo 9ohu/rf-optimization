@@ -13,6 +13,11 @@ var root = MAP.getContainer();
 var TABS = [['overview', 'Overview'], ['ep', 'EP Details'], ['kpi', 'KPI Details'],
             ['cells', 'Cell Info'], ['history', 'History']];
 var RAT = {'2G': '#A78BFA', '3G': '#2DD4BF', '4G': '#60A5FA', '5G': '#F472B6'};
+// one colour per critical cell: its line in History, its name under the chart
+// and in KPI Details
+var CELL_COLOURS = ['#20BFFF', '#F472B6', '#FACC15', '#22C55E', '#FB923C', '#A78BFA',
+                    '#2DD4BF', '#F87171', '#60A5FA', '#E879F9', '#A3E635', '#FDBA74'];
+function cellColour(j) { return CELL_COLOURS[j % CELL_COLOURS.length]; }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
     return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
@@ -122,8 +127,20 @@ function show(payload) {
   };
   var kv = function (rows) {
     return '<div class="rf-kv">' + rows.filter(function (r) { return r[1] != null && r[1] !== ''; })
-      .map(function (r) { return '<span>' + esc(r[0]) + '</span><b>' + esc(r[1]) + '</b>'; })
-      .join('') + '</div>';
+      .map(function (r) {   // r[2]: r[1] is markup already
+        return '<span>' + esc(r[0]) + '</span>' + (r[2] ? r[1] : '<b>' + esc(r[1]) + '</b>');
+      }).join('') + '</div>';
+  };
+  // the cells that were critical in an evaluated hour / day, by full name
+  var critCells = function (s) {
+    var k = K();
+    if (!k.judged) return '<b>No threshold set for this KPI</b>';
+    if (!s.crit || !s.crit.length) return '<b>None</b>';
+    var unit = k.period === 'Per Day' ? ' d' : ' h';
+    return '<b class="rf-cc">' + s.crit.map(function (c, j) {
+      return '<em><i style="--c:' + cellColour(j) + '"></i>' + esc(c.name) + '<small>'
+        + (c.layer ? esc(c.layer) + ' · ' : '') + c.n + unit + '</small></em>';
+    }).join('') + '</b>';
   };
   var table = function (t, statusCol) {
     if (!t || !t.rows.length) return '';
@@ -196,6 +213,7 @@ function show(payload) {
     if (r) rule = r.direction === 'up'
       ? 'OK ≥ ' + RF.fmt(r.warning) + ' · critical < ' + RF.fmt(r.critical)
       : 'OK ≤ ' + RF.fmt(r.warning) + ' · critical > ' + RF.fmt(r.critical);
+    if (k.ruleText) rule = k.ruleText;           // the FDD and the TDD line
     var h = '<div class="rf-kc"><div class="rf-kc-h"><div class="rf-kc-ico">' + ICON_CHART + '</div>'
       + '<div class="rf-kc-name">' + esc(k.label) + '</div></div>'
       + '<div class="rf-kc-val"><b>' + RF.fmt(v) + '<small>' + esc(k.unit) + '</small></b>'
@@ -212,11 +230,12 @@ function show(payload) {
     }
     h += '<div class="rf-kc">' + kv([
       ['Timestamp', RF.timeLabel()], ['Window', k.window],
-      [k.how === 'sum' ? 'Window total' : 'Window value', RF.withUnit(s.window)],
+      [k.judged ? 'Worst cell value' : k.how === 'sum' ? 'Window total' : 'Window value',
+       RF.withUnit(s.window)],
       ['Threshold', rule || 'None set for this KPI'], ['Unit', k.unit || '–'],
-      ['Aggregation', (k.how === 'sum' ? 'Sum' : 'Mean') + ' of the sector\'s cells per step'],
+      ['Aggregation', k.agg || ((k.how === 'sum' ? 'Sum' : 'Mean') + ' of the sector\'s cells per step')],
       ['Value from', s.src === 'site' ? 'Site (per-NodeB export)' : s.src === 'sector' ? 'Sector cells' : 'Not in the file'],
-      ['Data source', k.file]]) + '</div>';
+      ['Critical Cells', critCells(s), true]]) + '</div>';
     return h;
   };
   var cells = function (s) {
@@ -259,10 +278,66 @@ function show(payload) {
       + esc(k.times[n - 1].slice(5)) + '</text></svg>';
     return g;
   };
+  // a critical sector: only the cells that were over their line, each its own
+  // line and colour, the applicable line(s) dashed
+  var cellChart = function (s, k) {
+    var cs = s.crit, W = 340, H = 160, L0 = 34, R0 = 8, T0 = 10, B0 = 22, n = k.times.length;
+    var lo = Infinity, hi = -Infinity, lines = {};
+    cs.forEach(function (c) {
+      c.series.forEach(function (v) { if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } });
+      var at = lines[c.line] = lines[c.line] || [];
+      if (c.layer && at.indexOf(c.layer) < 0) at.push(c.layer);
+    });
+    var keys = Object.keys(lines).map(Number);
+    keys.forEach(function (x) { lo = Math.min(lo, x); hi = Math.max(hi, x); });
+    if (!(hi > lo)) { hi = lo + 1; lo = lo - 1; }
+    var X = function (j) { return L0 + (n > 1 ? j * (W - L0 - R0) / (n - 1) : 0); };
+    var Y = function (v) { return T0 + (hi - v) * (H - T0 - B0) / (hi - lo); };
+    var g = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">';
+    [lo, hi].forEach(function (v) {
+      g += '<line x1="' + L0 + '" x2="' + (W - R0) + '" y1="' + Y(v) + '" y2="' + Y(v) + '" stroke="#16324F"/>'
+        + '<text x="' + (L0 - 4) + '" y="' + (Y(v) + 3) + '" fill="#94A3B8" font-size="9" text-anchor="end">' + RF.fmt(v) + '</text>';
+    });
+    keys.forEach(function (x) {
+      g += '<line x1="' + L0 + '" x2="' + (W - R0) + '" y1="' + Y(x) + '" y2="' + Y(x)
+        + '" stroke="#EF4444" stroke-dasharray="4 3" stroke-width="1"/>';
+      if (keys.length > 1 && lines[x].length) g += '<text x="' + (W - R0 - 2) + '" y="' + (Y(x) - 3)
+        + '" fill="#EF4444" font-size="8" text-anchor="end">' + esc(lines[x].join(' / ')) + ' ' + RF.fmt(x) + '</text>';
+    });
+    cs.forEach(function (c, i) {
+      var path = '', pen = false;
+      for (var j = 0; j < n; j++) {
+        var v = c.series[j];
+        if (v == null) { pen = false; continue; }
+        path += (pen ? 'L' : 'M') + X(j).toFixed(1) + ' ' + Y(v).toFixed(1);
+        pen = true;
+      }
+      g += '<path d="' + path + '" fill="none" stroke="' + cellColour(i) + '" stroke-width="1.6"/>';
+    });
+    if (RF.t >= 0 && RF.t < n) g += '<line x1="' + X(RF.t) + '" x2="' + X(RF.t) + '" y1="' + T0
+      + '" y2="' + (H - B0) + '" stroke="#F8FAFC" stroke-width="1" opacity=".6"/>';
+    g += '<text x="' + L0 + '" y="' + (H - 6) + '" fill="#94A3B8" font-size="9">' + esc(k.times[0].slice(5)) + '</text>'
+      + '<text x="' + (W - R0) + '" y="' + (H - 6) + '" fill="#94A3B8" font-size="9" text-anchor="end">'
+      + esc(k.times[n - 1].slice(5)) + '</text></svg>';
+    return g;
+  };
+  // under the chart: each critical cell's full name, in its line's colour
+  var cellLegend = function (s, k) {
+    var unit = k.period === 'Per Day' ? ' d' : ' h';
+    return '<div class="rf-cc-leg"><div class="rf-cc-legt">Critical Cells</div>'
+      + s.crit.map(function (c, j) {
+        return '<div><i style="--c:' + cellColour(j) + '"></i><span>' + esc(c.name) + '</span><small>'
+          + (c.layer ? esc(c.layer) + ' · ' : '') + c.n + unit + ' critical</small></div>';
+      }).join('') + '</div>';
+  };
   var history = function (s) {
     var k = K(), h = '';
     if (!k) h += '<div class="rf-empty">No KPI on the map — pick one under <b>KPI analysis</b> to see '
       + 'this sector over the file\'s window.</div>';
+    else if (k.judged && s.crit && s.crit.length) h += '<div class="rf-sec-t">' + esc(k.label)
+      + ' <small>' + s.crit.length + ' critical cell' + (s.crit.length === 1 ? '' : 's') + ' · '
+      + k.times.length + (k.period === 'Per Day' ? ' days' : ' timestamps') + '</small></div>'
+      + '<div class="rf-hist">' + cellChart(s, k) + '</div>' + cellLegend(s, k);
     else if (!s.stats.n) h += '<div class="rf-empty">No ' + esc(k.label) + ' data for this sector in '
       + esc(k.file) + '.</div>';
     else h += '<div class="rf-sec-t">' + esc(k.label) + ' <small>' + s.stats.n + ' of '

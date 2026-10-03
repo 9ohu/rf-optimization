@@ -44,8 +44,8 @@ from rfopt.actions.geometry import (angular_offset_deg, bearing_deg as _brg,
 from rfopt.ingest.hourly_kpi import KpiFileInfo
 from rfopt.ingest.site_status import apply_ep_status as _apply_ep_status
 from _kpi_map import (KPI_BAND as _KPI_BAND,
+                      threshold_rule as _threshold_rule,
                       kpi_choices as _kpi_choices,
-                      apply_scheme as _apply_scheme,
                       band_scheme as _band_scheme,
                       sector_values as _sector_values)
 from _map_ui import (AIR as _AIR, AIR_LABEL as _AIR_LABEL,
@@ -65,6 +65,7 @@ from _map_assets import (MousePositionControl as _MousePosition,
                          pin_icon as _pin_icon,
                          use_local_libraries as _use_local_libraries)
 import _resources as R
+import _kpi_cells as _KC
 import _complaints as _C
 import _relocate as _RL
 from rfopt.complaints.comment import ticket_comment as _ticket_comment
@@ -401,29 +402,60 @@ def _kpi_group_id(group: list) -> str:
 # export can never be answered from the previous one's cache.
 @st.cache_resource(show_spinner="Reading that KPI out of the export…",
                    max_entries=8)
-def _sector_kpis(file_id: str, kpi: str, paths: tuple):
-    """One KPI over the whole window, per sector and per site.
+def _sector_kpis(file_id: str, kpi: str, paths: tuple, period: str = _KC.PER_HOUR,
+                 layer: str = _KC.ALL, kmz: str = "") -> "_KC.MapKpi":
+    """One KPI per sector and per site, over the whole window and per hour
+    (or day) — `_kpi_cells.evaluate`.
 
     A 4G export is per cell, so the loader's `sector_id` lands each value on
     the map's own `<site>-S<n>` beam. A 3G export is per NodeB and names no
-    sector at all, so those rows are also rolled up per site, and every
-    sector of that site takes the NodeB's value. The files of one technology
-    that carry the KPI are read as one export (`merge_hourly`).
+    sector at all, so those rows are taken per site, and every sector of that
+    site takes the NodeB's value. The files of one technology that carry the
+    KPI are read as one export (`merge_hourly`). A KPI with a judged threshold
+    is judged cell by cell (a sector is its worst cell, a TDD cell on the TDD
+    line); one without keeps the mean / sum of the sector's cells. `layer`:
+    only the 4G TDD or FDD cells. `kmz`: the site KMZ, whose cell bands tell
+    TDD from FDD when the export carries no Cell FDD TDD Indication.
     """
     from rfopt.ingest.hourly_kpi import load_hourly_raw, merge_hourly
-    from rfopt.kpi.trends import agg_how
 
     df = merge_hourly([load_hourly_raw(p, [kpi]) for p in paths])
-    d = df[df[kpi].notna()]
-    how = agg_how(kpi)
-    no_sector = d["sector_id"].str.endswith("-S0")
-    per_sector = d[~no_sector].groupby("sector_id", observed=True)[kpi].agg(how)
-    per_site = d[no_sector].groupby("site_id", observed=True)[kpi].agg(how)
-    window = (str(df["datetime"].min()), str(df["datetime"].max()))
-    # the same rows, a column per timestamp of the file: the time slider
-    from _kpi_time import series_pivots
-    sec_t, site_t = series_pivots(df, kpi)
-    return per_sector, per_site, window, sec_t, site_t
+    duplex_of = None
+    if kmz and ("duplex" not in df.columns or df["duplex"].isna().any()):
+        _ks = _load_kmz_path(kmz)
+        duplex_of = _KC.duplex_of_cells(_ks.cells) if _ks is not None else None
+    return _KC.evaluate(df, kpi, rule=_threshold_rule(kpi), period=period, layer=layer,
+                        duplex_of=duplex_of)
+
+
+def _layer_rule(kpi: str, layer: str):
+    """The line a KPI is read on in the map's legend and the drawer: the TDD
+    line for UL interference on the TDD layer, else the KPI's own."""
+    from rfopt.kpi.thresholds import rule_for_duplex
+    rule = _threshold_rule(kpi)
+    return rule_for_duplex(rule, "CELL_TDD") if rule is not None and layer == _KC.TDD else rule
+
+
+def _kpi_texts(kpi: str, m, layer: str) -> dict:
+    """What the drawer says about how the KPI is read (KPI Details)."""
+    from rfopt.kpi.thresholds import rule_for_duplex
+    from rfopt.kpi.trends import agg_how
+    step = "day" if m is not None and m.period == _KC.PER_DAY else "hour"
+    if m is not None and m.judged:
+        agg = ("Each cell's daily mean judged on its own; the sector shows its worst cell"
+               if step == "day" else
+               "Each cell judged on its own every hour; the sector shows its worst cell")
+    else:
+        agg = f"{'Sum' if agg_how(kpi) == 'sum' else 'Mean'} of the sector's cells per {step}"
+    rule, text = _threshold_rule(kpi), None
+    tdd = rule_for_duplex(rule, "CELL_TDD") if rule is not None else None
+    if rule is not None and tdd is not rule and layer == _KC.ALL:
+        def line(r):
+            return (f"OK ≥ {r.warning:g} · critical < {r.critical:g}" if r.direction == "up"
+                    else f"OK ≤ {r.warning:g} · critical > {r.critical:g}")
+        text = f"FDD {line(rule)} | TDD {line(tdd)}"
+    return {"judged": bool(m is not None and m.judged), "agg": agg, "ruleText": text,
+            "period": m.period if m is not None else _KC.PER_HOUR}
 
 
 class _SectorHits(MacroElement):
@@ -1031,6 +1063,21 @@ with view_box:
                             disabled=not ep_path)
     if not ep_path:
         topology = "All"
+    # how a KPI is judged on the map: every cell each hour, or each cell's day
+    period = st.segmented_control(
+        "Period", list(_KC.PERIODS), default=_KC.PER_HOUR, required=True,
+        key="sm_period", width="stretch",
+        help="Per Hour: every cell is judged on its own each hour — one hour over "
+             "its line makes the cell, and its sector, critical. Per Day: each "
+             "cell's own daily value is judged. A sector is never averaged with "
+             "its other cells.")
+    layer = _KC.ALL
+    if topo == "4G":
+        layer = st.segmented_control(
+            "Layer", list(_KC.LAYERS), default=_KC.ALL, required=True, key="sm_layer",
+            width="stretch",
+            help="Only the TDD or the FDD cells (the export's Cell FDD TDD "
+                 "Indication; the KMZ band for an export without it), or both.")
 
 with kpi_box:
     # The active KPI Data of Data Resources: 4G, 3G and 2G exports together;
@@ -1042,6 +1089,7 @@ with kpi_box:
 
     kpi_col, kpi_name = None, ""
     kpi_sect = kpi_site = None
+    kpi_m = None                            # the KPI judged cell by cell (_kpi_cells)
     kpi_window = ("", "")
     kpi_sec_t = kpi_site_t = None
     kpi_fid = kpi_file = ""
@@ -1111,10 +1159,14 @@ with kpi_box:
                 _g = by_id[picked.file_id]
                 kpi_fid = picked.file_id
                 kpi_file = " + ".join(_f.name for _, _, _f in _g)
-                (kpi_sect, kpi_site, kpi_window, kpi_sec_t,
-                 kpi_site_t) = _sector_kpis(
+                kpi_m = _sector_kpis(
                     picked.file_id, picked.kpi,
-                    tuple(_p for _p, _i, _ in _g if picked.kpi in _i.all_kpis))
+                    tuple(_p for _p, _i, _ in _g if picked.kpi in _i.all_kpis),
+                    period, layer if picked.kind == "4G" else _KC.ALL,
+                    kmz_path if picked.kind == "4G" and kmz_path else "")
+                kpi_sect, kpi_site, kpi_window = (kpi_m.per_sector, kpi_m.per_site,
+                                                  kpi_m.window)
+                kpi_sec_t, kpi_site_t = kpi_m.sec_t, kpi_m.site_t
     if not fs:
         legend_slot = st.container()       # the KPI's legend card, under its list
 
@@ -1349,10 +1401,19 @@ def _drawer_payload(sid: str, *, index_of: dict, beam_len: float,
     rsi_of = ({_ep_key(n): v for n, v in zip(ep["cell_name"], ep["rsi"])
                if pd.notna(v)} if ep is not None and len(ep) and "rsi" in ep.columns
               else {})
+    _m = kpi["m"] if kpi else None
+    _judged = _m is not None and _m.judged
     kpi_rows = (_sector_kpis_json(
         secs, kpi["sec"], kpi["site"],
         _sector_values(secs, kpi["per_sector"], kpi["per_site"]).to_numpy(),
-        kpi["scheme"]) if kpi else [None] * len(secs))
+        kpi["scheme"],
+        sev=({"window": _sector_values(secs, _m.sev_sector, _m.sev_site).to_numpy(),
+              "sec": _m.sev_sec_t, "site": _m.sev_site_t} if _judged else None))
+        if kpi else [None] * len(secs))
+    # the cells that were critical in an evaluated hour / day, with their own
+    # series over the same frames as the sector's
+    _times = sorted(set(kpi["sec"].columns) | set(kpi["site"].columns)) if kpi else []
+    _rule = _threshold_rule(kpi_col) if _judged else None
 
     def num(v):
         v = pd.to_numeric(v, errors="coerce")
@@ -1363,6 +1424,8 @@ def _drawer_payload(sid: str, *, index_of: dict, beam_len: float,
         cc = site_cells[site_cells["sector_id"] == s0.sector_id]
         if topo != "All":
             cc = cc[cc["technology"] == topo]
+        if topo == "4G" and layer != _KC.ALL:
+            cc = cc[_KC.tdd_band(cc["band_label"]).to_numpy() == (layer == _KC.TDD)]
         cells_tbl = None
         if len(cc):
             d = cc.assign(_o=cc["technology"].map(_TECH_ORDER).fillna(9),
@@ -1404,6 +1467,11 @@ def _drawer_payload(sid: str, *, index_of: dict, beam_len: float,
             "ep_note": ep_note,
             **(kpi_rows[j] or {"series": None, "window": None, "codes": None,
                                "stats": {"n": 0}, "src": "none"})})
+        _src = sectors[-1]["src"]
+        sectors[-1]["crit"] = (_KC.critical_cells(
+            _m, "site" if _src == "site" else "sector",
+            site_id if _src == "site" else str(s0.sector_id), _times, _rule)
+            if _judged and _src in ("site", "sector") else [])
 
     name = str(site["site_name"]).strip() if pd.notna(site["site_name"]) else ""
     return {
@@ -1520,6 +1588,11 @@ with map_area, st.container(key="sm_mapwrap"):
     # -- technology + topology filter ------------------------------------- #
     tcol = {"2G": "n_2g", "3G": "n_3g", "4G": "n_4g"}.get(topo)
     SECT_view = SECT if tcol is None else SECT[_num(SECT[tcol]).fillna(0) > 0]
+    if topo == "4G" and layer != _KC.ALL:
+        # only the sectors with a 4G cell of that layer (the KMZ's cell band)
+        _c4 = CELLS[CELLS["technology"].astype(str) == "4G"]
+        _lay = _c4[_KC.tdd_band(_c4["band_label"]).to_numpy() == (layer == _KC.TDD)]
+        SECT_view = SECT_view[SECT_view["sector_id"].isin(set(_lay["sector_id"]))]
     if topology != "All":
         _by_sec, _by_site = _topology_index(ep_path)
         if _by_sec or _by_site:
@@ -1636,13 +1709,20 @@ with map_area, st.container(key="sm_mapwrap"):
     # colouring by a KPI replaces the air-status colours: one meaning at a
     # time, or the map says two things with the same paint
     kpi_band, kpi_val, kpi_legend, _band_colour = {}, {}, [], {}
-    kpi_scheme = None
+    kpi_scheme = _sev_w = None
     if kpi_col and kpi_sect is not None:
         # a sector's own value, or its site's when the file has no sectors (3G)
         _vals = _sector_values(draw, kpi_sect, kpi_site)
+        # judged cell by cell: the severity of the sector's worst cell decides
+        # its colour (one critical cell is a critical sector)
+        if kpi_m is not None and kpi_m.judged:
+            _sev_w = _sector_values(draw, kpi_m.sev_sector, kpi_m.sev_site)
         # decided once on the window; every hour on the slider uses it too
-        kpi_scheme = _band_scheme(_vals, kpi_col)
-        bands, kpi_legend = _apply_scheme(_vals, kpi_scheme), kpi_scheme.spec
+        kpi_scheme = _band_scheme(_vals, kpi_col, _layer_rule(kpi_col, layer))
+        bands = _KC.band_keys(_vals.to_numpy(),
+                              _sev_w.to_numpy() if _sev_w is not None else None, kpi_scheme)
+        bands.index = _vals.index
+        kpi_legend = kpi_scheme.spec
         kpi_band, kpi_val = bands.to_dict(), _vals.to_dict()
         _band_colour = {k: c for k, c, _ in kpi_legend}
         _band_colour["none"] = _KPI_BAND["none"]
@@ -1795,12 +1875,15 @@ with map_area, st.container(key="sm_mapwrap"):
     if kpi_col and kpi_scheme is not None and kpi_sec_t is not None:
         from rfopt.kpi.trends import agg_how as _agg_how
         _kpi_ctx = {"sec": kpi_sec_t, "site": kpi_site_t, "per_sector": kpi_sect,
-                    "per_site": kpi_site, "scheme": kpi_scheme}
+                    "per_site": kpi_site, "scheme": kpi_scheme, "m": kpi_m}
         fmap.add_child(_KpiTimeline(_kpi_config(
             label=kpi_name, kpi=kpi_col, unit=_kpi_unit(kpi_col),
             how=_agg_how(kpi_col), file_name=kpi_file, scheme=kpi_scheme,
             draw=draw, window_vals=_vals.to_numpy(), sec=kpi_sec_t,
-            site=kpi_site_t, store=_store_key(kpi_fid, kpi_col)),
+            site=kpi_site_t, store=_store_key(kpi_fid, kpi_col, period, layer),
+            sev=({"window": _sev_w.to_numpy(), "sec": kpi_m.sev_sec_t,
+                  "site": kpi_m.sev_site_t} if _sev_w is not None else None),
+            period=period, extra=_kpi_texts(kpi_col, kpi_m, layer)),
             _beams_layer.get_name() if _beams_layer is not None else None))
     # the drawer's code rides in the map, the selected site's data does not: it
     # is published beside the map (below). A beam click used to change the map's
@@ -1864,11 +1947,20 @@ if legend_slot is not None:
             _n_t = (len(set(kpi_sec_t.columns) | set(kpi_site_t.columns))
                     if kpi_sec_t is not None else 0)
             if _rule is not None:
+                from rfopt.kpi.thresholds import rule_for_duplex as _rfd
                 _up = _rule.direction == "up"
-                _thr = [(_swatch("square", _KPI_BAND["warning"]), "OK line",
+                _tddr = _rfd(_rule, "CELL_TDD") if layer == _KC.ALL else _rule
+                _lyr = ("FDD " if _tddr is not _rule else
+                        "TDD " if layer == _KC.TDD and _rule.kpi == "ul_rssi_tdd_dbm" else "")
+                _thr = [(_swatch("square", _KPI_BAND["warning"]), f"{_lyr}OK line",
                          f"{'≥' if _up else '≤'} {_rule.warning:g}"),
-                        (_swatch("square", _KPI_BAND["critical"]), "Critical",
+                        (_swatch("square", _KPI_BAND["critical"]), f"{_lyr}Critical",
                          f"{'<' if _up else '>'} {_rule.critical:g}")]
+                if _tddr is not _rule:
+                    _thr += [(_swatch("square", _KPI_BAND["warning"]), "TDD OK line",
+                              f"≤ {_tddr.warning:g}"),
+                             (_swatch("square", _KPI_BAND["critical"]), "TDD Critical",
+                              f"> {_tddr.critical:g}")]
             else:
                 _thr = [(_swatch("info", "#94A3B8"), "Thresholds",
                          "none · shaded by size")]

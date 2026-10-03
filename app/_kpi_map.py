@@ -300,11 +300,12 @@ def scheme_segments(scheme: BandScheme, lo: float, hi: float) -> list[tuple]:
                   if min(b, hi) > max(a, lo))
 
 
-def band_scheme(values: pd.Series, kpi: str) -> BandScheme:
+def band_scheme(values: pd.Series, kpi: str, rule=None) -> BandScheme:
     """Decide the bands on these values: thresholds (with graded greens), or
-    a round-number magnitude ramp when the KPI has none."""
+    a round-number magnitude ramp when the KPI has none. `rule`: the line to
+    read them on instead of the KPI's own (a layer's)."""
     v = pd.to_numeric(values, errors="coerce")
-    rule = threshold_rule(kpi)
+    rule = rule if rule is not None else threshold_rule(kpi)
     if rule is not None:
         crit, warn = float(rule.critical), float(rule.warning)
         up = rule.direction == "up"

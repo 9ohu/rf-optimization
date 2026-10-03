@@ -16,8 +16,7 @@ import pandas as pd
 from branca.element import MacroElement
 from jinja2 import Template
 
-from _kpi_map import (BAND_LABEL, KPI_BAND, LEGEND_CSS, apply_scheme,
-                      scheme_segments)
+from _kpi_map import BAND_LABEL, KPI_BAND, LEGEND_CSS, scheme_segments
 from _kpi_time import js_json, pack_frames, series_stats, time_labels, time_matrix
 from _map_ui import band_rank
 from _ui import ICONS
@@ -102,12 +101,19 @@ def band_order(scheme) -> list[str]:
 
 def kpi_config(*, label: str, kpi: str, unit: str, how: str, file_name: str,
                scheme, draw: pd.DataFrame, window_vals, sec: pd.DataFrame,
-               site: pd.DataFrame, store: str) -> dict:
-    """Everything the time slider needs, from the export's own timestamps."""
+               site: pd.DataFrame, store: str, sev: dict | None = None,
+               period: str = "Per Hour", extra: dict | None = None) -> dict:
+    """Everything the time slider needs, from the export's own timestamps (or
+    its days). `sev`: the severities of a KPI judged cell by cell — "window"
+    per drawn sector, "sec" / "site" per frame (`_kpi_cells`)."""
     window_vals = np.asarray(window_vals, dtype=float)
     times, matrix = time_matrix(draw, sec, site)
     order = band_order(scheme)
-    packed = pack_frames(window_vals, matrix, scheme, order)
+    sev_m = None
+    if sev is not None:
+        _, sev_m = time_matrix(draw, sev["sec"], sev["site"])
+    packed = pack_frames(window_vals, matrix, scheme, order,
+                         sev["window"] if sev is not None else None, sev_m)
     colour = {k: c for k, c, _ in scheme.spec}
     colour["none"] = KPI_BAND["none"]
     text = {k: t for k, _, t in scheme.spec}
@@ -117,9 +123,9 @@ def kpi_config(*, label: str, kpi: str, unit: str, how: str, file_name: str,
     every = np.concatenate([window_vals.ravel(), matrix.ravel()])
     finite = every[np.isfinite(every)]
     lo, hi = (float(finite.min()), float(finite.max())) if finite.size else (None, None)
-    labels = time_labels(times)
+    labels = time_labels(times, period)
     rule = scheme.rule
-    return {
+    return {**(extra or {}),
         "label": label, "column": kpi, "unit": unit, "how": how, "file": file_name,
         "bands": bands, "times": labels,
         "window": f"{labels[0]} → {labels[-1]}" if labels else "",
@@ -134,18 +140,27 @@ def kpi_config(*, label: str, kpi: str, unit: str, how: str, file_name: str,
 
 
 def sector_kpis(sectors: pd.DataFrame, sec: pd.DataFrame, site: pd.DataFrame,
-                window_vals, scheme) -> list[dict]:
+                window_vals, scheme, sev: dict | None = None) -> list[dict]:
     """One site's sectors over the export: the exact series, the band code per
-    frame (window first), min / avg / max, and where the value comes from."""
+    frame (window first), min / avg / max, and where the value comes from.
+    `sev`: the severities of a KPI judged cell by cell (see `kpi_config`)."""
+    from _kpi_cells import band_keys
+
     window_vals = np.asarray(window_vals, dtype=float)
     _, matrix = time_matrix(sectors, sec, site)
+    sev_w = sev_m = None
+    if sev is not None:
+        sev_w = np.asarray(sev["window"], dtype=float)
+        _, sev_m = time_matrix(sectors, sev["sec"], sev["site"])
     order = band_order(scheme)
     index = {k: j for j, k in enumerate(order)}
     out = []
     for j in range(len(sectors)):
         w = window_vals[j]
         row = matrix[j] if matrix.shape[1] else np.array([])
-        keys = apply_scheme(pd.Series(np.concatenate([[w], row])), scheme)
+        sv = (np.concatenate([[sev_w[j]], sev_m[j] if sev_m.shape[1] else np.array([])])
+              if sev_w is not None else None)
+        keys = band_keys(np.concatenate([[w], row]), sv, scheme)
         sid = str(sectors["sector_id"].iloc[j])
         site_id = str(sectors["site_id"].iloc[j])
         src = ("sector" if len(sec) and sid in sec.index else

@@ -1,4 +1,43 @@
-# Project status / handoff  (updated 2026-10-02)
+# Project status / handoff  (updated 2026-10-03)
+
+## 2026-10-03 - Sites map KPI: each cell judged on its own (Per Hour / Per Day, TDD / FDD)
+
+Site Map KPI display only. Complaint Analysis, Delay Tickets Analysis, the
+problem-time correlation, resolution, RSRP, serving / neighbour logic and
+Sleep Analysis are unchanged (`rfopt/kpi/thresholds.hourly_severity` is
+reused as it is).
+
+- **Audit - why a critical cell showed OK**: `site_map._sector_kpis` reduced
+  the export to one value per sector - `groupby(sector_id).agg(mean)` over every
+  cell and every hour of the file (the "Whole window"), and
+  `series_pivots` a `pivot_table(aggfunc=mean)` of the sector's cells per
+  timestamp. `_kpi_map.band_scheme` / `apply_scheme` coloured that mean on
+  `threshold_rule(kpi)`, i.e. the one line of the column (`ul_rssi_dbm`, FDD
+  -105) - TDD cells never met their own line (`ul_rssi_tdd_dbm`, -100). The
+  drawer showed the same mean ("Window value", "Mean of the sector's cells per
+  step") and one History line. A cell over its line in a few hours was
+  averaged with its sector's other cells and with its own quiet hours.
+- **Now** (`app/_kpi_cells.py`, `evaluate`): a KPI with a judged threshold is
+  judged cell by cell - every hour (Per Hour, default) or on the cell's own
+  daily mean (Per Day) - with `hourly_severity` (a TDD cell's UL interference
+  on the TDD line); a sector (a per-NodeB site) at an hour / day takes its
+  worst cell (most severe, then worst value), over the window its worst
+  cell-hour. Beams, towers, legend and the time slider are banded by that
+  severity (`band_keys`, `pack_frames(sev_...)`). A KPI without a judged
+  threshold keeps the mean / sum of the sector's cells.
+- **Current View**: Period (Per Hour / Per Day); with Technology 4G, Layer
+  (TDD / FDD / All) - only that layer's cells (export Cell FDD TDD Indication,
+  else the KMZ band) in the KPI, the beams (sectors with a cell of the layer)
+  and Cell Info; on the TDD layer the legend / drawer read the TDD line.
+- **Drawer**: KPI Details "Data source" -> **Critical Cells** (full names, the
+  hours / days each was critical, in the History colours); "Worst cell value"
+  and the evaluation text; both lines when FDD and TDD are shown. History of a
+  critical sector: only its critical cells, one colour each, the applicable
+  line(s) dashed, the names under the chart.
+- Tests: `tests/test_site_map_kpi_cells.py` (one cell, TDD on the TDD line /
+  FDD on the FDD line, several cells at different hours, normal daily average
+  with hourly breaches, PRB, the layers + KMZ fallback, unjudged KPIs, frame
+  banding, the page end to end, the drawer).
 
 ## 2026-10-02 - Neighbour sectors: only the first relevant sector in each direction
 

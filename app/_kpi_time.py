@@ -55,29 +55,36 @@ def time_matrix(sectors: pd.DataFrame, sec: pd.DataFrame,
     return times, np.where(np.isnan(own), fall, own)
 
 
-def time_labels(times: list) -> list[str]:
-    return [pd.Timestamp(t).strftime("%Y-%m-%d %H:%M") for t in times]
+def time_labels(times: list, period: str = "Per Hour") -> list[str]:
+    fmt = "%Y-%m-%d Whole day" if period == "Per Day" else "%Y-%m-%d %H:%M"
+    return [pd.Timestamp(t).strftime(fmt) for t in times]
 
 
 def pack_frames(window: np.ndarray, matrix: np.ndarray, scheme,
-                band_order: list[str]) -> dict:
+                band_order: list[str], sev_window=None, sev_matrix=None) -> dict:
     """Frame 0 is the whole window, then one frame per timestamp.
 
     Each frame is a string with one band code per row; sectors with identical
     series share a row (every sector of a 3G NodeB does). Values ride along,
     quantised to two characters, when they fit the budget — they are only for
-    the hover text; the bands are exact.
+    the hover text; the bands are exact. With the severities (a KPI judged
+    cell by cell, `_kpi_cells`), a band follows the severity of the cell behind
+    the value, not the value alone.
     """
-    from _kpi_map import apply_scheme
+    from _kpi_cells import band_keys
 
     full = np.column_stack([np.asarray(window, dtype=float).reshape(-1, 1),
                             np.asarray(matrix, dtype=float)])
     full = np.where(np.isfinite(full), full, np.nan)
+    sev = None
+    if sev_window is not None and sev_matrix is not None:
+        sev = np.column_stack([np.asarray(sev_window, dtype=float).reshape(-1, 1),
+                               np.asarray(sev_matrix, dtype=float)])
     rows: dict[bytes, int] = {}
     first: list[int] = []
     src = np.zeros(len(full), dtype=np.int64)
     for i, r in enumerate(full):
-        k = r.tobytes()
+        k = r.tobytes() + (sev[i].tobytes() if sev is not None else b"")
         if k not in rows:
             rows[k] = len(first)
             first.append(i)
@@ -85,7 +92,7 @@ def pack_frames(window: np.ndarray, matrix: np.ndarray, scheme,
     uniq = full[first] if first else np.empty((0, full.shape[1]))
 
     index = {k: j for j, k in enumerate(band_order)}
-    keys = apply_scheme(pd.Series(uniq.ravel()), scheme)
+    keys = band_keys(uniq.ravel(), sev[first].ravel() if sev is not None else None, scheme)
     codes = (keys.map(index).fillna(index["none"]).to_numpy(dtype=np.uint8)
              .reshape(uniq.shape) + 48)
     frames = [codes[:, f].tobytes().decode("ascii") for f in range(uniq.shape[1])]
